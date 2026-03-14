@@ -7,7 +7,7 @@ from agents.vision_agent.victim_counter import detect_victims_and_vehicles
 # ============================================================================
 # Configuration
 # ============================================================================
-IMAGE_PATH = "drones-10-00015-g001.png"
+IMAGE_PATH = "Gemini_Generated_Image_rxmnbnrxmnbnrxmn.png"
 VICTIM_MODEL_PATH = "yolov8n.pt"
 DEBRIS_MODEL_PATH = r"agents\vision_agent\best_debris.pt"
 OUTPUT_PATH = "image_analysis_complete.jpg"
