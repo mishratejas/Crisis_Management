@@ -1,15 +1,15 @@
 from agents.vision_agent.vision_agent import analyze_image
-from agents.resource_agent.resource_agent import allocate_drones
-from agents.resource_agent.resource_agent import allocate_rescue_resources
-from agents.route_planner.route_planner import plan_routes
-from agents.communication_agent.communication_agent import send_dispatch
-from utils.llm_message import generate_dispatch_message
+# from agents.resource_agent.resource_agent import allocate_drones
+# from agents.resource_agent.resource_agent import allocate_rescue_resources
+# from agents.route_planner.route_planner import plan_routes
+# from agents.communication_agent.communication_agent import send_dispatch
+# from utils.llm_message import generate_dispatch_message
 
 
 from db.update_from_vision import update_zones_from_vision
-from db.update_people_count import update_people_count
+# from db.update_people_count import update_people_count
 
-from utils.admin_interface import admin_approval
+# from utils.admin_interface import admin_approval
 
 
 # -----------------------------------
@@ -44,158 +44,158 @@ def store_zone_node(state):
 # Drone Decision
 # -----------------------------------
 
-def drone_decision_node(state):
+# def drone_decision_node(state):
 
-    print("\n[RESOURCE AGENT] Deciding drone deployment")
+#     print("\n[RESOURCE AGENT] Deciding drone deployment")
 
-    decisions = allocate_drones(state["zone_map"])
+#     decisions = allocate_drones(state["zone_map"])
 
-    drone_zones = [
-        zone
-        for zone, data in decisions.items()
-        if data["deploy_drone"]
-    ]
+#     drone_zones = [
+#         zone
+#         for zone, data in decisions.items()
+#         if data["deploy_drone"]
+#     ]
 
-    print("[RESOURCE AGENT] Drone zones:", drone_zones)
+#     print("[RESOURCE AGENT] Drone zones:", drone_zones)
 
-    return {"drone_zones": drone_zones}
+#     return {"drone_zones": drone_zones}
 
 
 # -----------------------------------
 # Drone Dispatch
 # -----------------------------------
 
-def drone_dispatch_node(state):
+# def drone_dispatch_node(state):
 
-    print("\n[MASTER] Dispatching drones")
+#     print("\n[MASTER] Dispatching drones")
 
-    for z in state["drone_zones"]:
-        print("Drone sent to zone:", z)
+#     for z in state["drone_zones"]:
+#         print("Drone sent to zone:", z)
 
-    return {}
+#     return {}
 
 
 # -----------------------------------
 # Drone Vision Analysis
 # -----------------------------------
 
-def drone_vision_node(state):
+# def drone_vision_node(state):
 
-    print("\n[DRONE VISION] Detecting people")
+#     print("\n[DRONE VISION] Detecting people")
 
-    # demo simulation
-    people_counts = {}
+#     # demo simulation
+#     people_counts = {}
 
-    for zone in state["drone_zones"]:
-        people_counts[zone] = 5
+#     for zone in state["drone_zones"]:
+#         people_counts[zone] = 5
 
-    print("[DRONE VISION] People detected:", people_counts)
+#     print("[DRONE VISION] People detected:", people_counts)
 
-    return {"people_counts": people_counts}
+#     return {"people_counts": people_counts}
 
 
 # -----------------------------------
 # Update People Count
 # -----------------------------------
 
-def update_people_node(state):
+# def update_people_node(state):
 
-    print("\n[DB] Updating people counts")
+#     print("\n[DB] Updating people counts")
 
-    update_people_count(state["people_counts"])
+#     update_people_count(state["people_counts"])
 
-    return {}
+#     return {}
 
 
 # -----------------------------------
 # Rescue Resource Allocation
 # -----------------------------------
 
-def rescue_decision_node(state):
+# def rescue_decision_node(state):
 
-    print("\n[RESOURCE AGENT] Deciding rescue resources")
+#     print("\n[RESOURCE AGENT] Deciding rescue resources")
 
-    rescue_plan = allocate_rescue_resources()
+#     rescue_plan = allocate_rescue_resources()
 
-    print("[RESOURCE AGENT] Proposed rescue plan:")
-    print(rescue_plan)
+#     print("[RESOURCE AGENT] Proposed rescue plan:")
+#     print(rescue_plan)
 
-    return {"rescue_plan": rescue_plan}
+#     return {"rescue_plan": rescue_plan}
 
 
 # -----------------------------------
 # Admin Resource Approval
 # -----------------------------------
 
-def admin_resource_node(state):
+# def admin_resource_node(state):
 
-    approved = admin_approval("Approve rescue resource allocation?")
+#     approved = admin_approval("Approve rescue resource allocation?")
 
-    if not approved:
-        raise Exception("Admin rejected resource allocation")
+#     if not approved:
+#         raise Exception("Admin rejected resource allocation")
 
-    print("[ADMIN] Resources approved")
+#     print("[ADMIN] Resources approved")
 
-    return {}
+#     return {}
 
 
 # -----------------------------------
 # Route Planning
 # -----------------------------------
 
-def route_planner_node(state):
+# def route_planner_node(state):
 
-    print("\n[ROUTE PLANNER] Planning routes")
+#     print("\n[ROUTE PLANNER] Planning routes")
 
-    routes = plan_routes(state["rescue_plan"])
+#     routes = plan_routes(state["rescue_plan"])
 
-    print("[ROUTE PLANNER] Routes planned")
+#     print("[ROUTE PLANNER] Routes planned")
 
-    return {"route_plan": routes}
+#     return {"route_plan": routes}
 
 
 # -----------------------------------
 # Admin Route Approval
 # -----------------------------------
 
-def admin_route_node(state):
+# def admin_route_node(state):
 
-    approved = admin_approval("Approve rescue routes?")
+#     approved = admin_approval("Approve rescue routes?")
 
-    if not approved:
-        raise Exception("Admin rejected routes")
+#     if not approved:
+#         raise Exception("Admin rejected routes")
 
-    print("[ADMIN] Routes approved")
+#     print("[ADMIN] Routes approved")
 
-    return {}
+#     return {}
 
 
 
-def llm_message_node(state):
+# def llm_message_node(state):
 
-    print("\n[LLM] Generating human-friendly dispatch message")
+#     print("\n[LLM] Generating human-friendly dispatch message")
 
-    message = generate_dispatch_message(
-        state["route_plan"],
-        state["rescue_plan"]
-    )
+#     message = generate_dispatch_message(
+#         state["route_plan"],
+#         state["rescue_plan"]
+#     )
 
-    print("\n[LLM MESSAGE]")
-    print(message)
+#     print("\n[LLM MESSAGE]")
+#     print(message)
 
-    return {"dispatch_message": message}
+#     return {"dispatch_message": message}
 
 
 # -----------------------------------
 # Communication Agent
 # -----------------------------------
 
-def communication_node(state):
+# def communication_node(state):
 
-    print("\n[COMMUNICATION AGENT] Sending dispatch")
+#     print("\n[COMMUNICATION AGENT] Sending dispatch")
 
-    send_dispatch(state["dispatch_message"])
+#     send_dispatch(state["dispatch_message"])
 
-    print("[COMMUNICATION AGENT] Dispatch delivered")
+#     print("[COMMUNICATION AGENT] Dispatch delivered")
 
-    return {}
+#     return {}

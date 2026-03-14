@@ -12,9 +12,15 @@ def run_system():
         if image == "exit":
             break
 
-        master_graph.invoke({
-            "satellite_image": image
-        })
+        try:
+
+            master_graph.invoke({
+                "satellite_image": image
+            })
+
+        except Exception as e:
+
+            print("\n[ERROR]", e)
 
 
 if __name__ == "__main__":
