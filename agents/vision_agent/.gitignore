@@ -21,9 +21,5 @@ env/
 .DS_Store
 Thumbs.db
 
-# ML models (optional)
-*.pt
-*.pth
-
 # YOLO outputs
 runs/
