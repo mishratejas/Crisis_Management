@@ -132,6 +132,25 @@ def make_base_locations() -> dict:
     }
 
 
+
+# ── Optional dependency guard ─────────────────────────────────────────────────
+try:
+    from shapely.geometry import Point, Polygon
+    SHAPELY_AVAILABLE = True
+except ImportError:
+    SHAPELY_AVAILABLE = False
+
+def skip_if_no_shapely():
+    """Skip test gracefully when shapely is not installed."""
+    if not SHAPELY_AVAILABLE:
+        raise SkipTest("shapely not installed — run: pip install shapely")
+
+class SkipTest(Exception):
+    pass
+
+# Patch run_test to handle SkipTest as a skip, not a failure
+_orig_run_test = None  # will be set after run_test is defined
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Test runner
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -143,6 +162,9 @@ def run_test(name: str, fn):
         fn()
         print(f"  ✅ PASS  {name}")
         _results.append((name, True, None))
+    except SkipTest as e:
+        print(f"  ⏭  SKIP  {name}  ({e})")
+        _results.append((name, None, str(e)))
     except Exception as e:
         tb = traceback.format_exc()
         print(f"  ❌ FAIL  {name}")
@@ -335,6 +357,7 @@ def test_nearest_node_synthetic_returns_valid_node():
 
 
 def test_mask_to_polygons_empty_mask():
+    skip_if_no_shapely()
     """All-zero mask must return empty list."""
     from agents.route_agent.geo_reference import build_geo_transform
     from agents.route_agent.road_network  import mask_to_polygons
@@ -351,6 +374,7 @@ def test_mask_to_polygons_empty_mask():
 
 
 def test_mask_to_polygons_flood_hotspot():
+    skip_if_no_shapely()
     """
     A binarised flood hotspot should produce at least one polygon.
     Tests the BUG 2 fix: float map binarised BEFORE calling mask_to_polygons.
@@ -376,6 +400,7 @@ def test_mask_to_polygons_flood_hotspot():
 
 
 def test_remove_blocked_roads_penalises_edges():
+    skip_if_no_shapely()
     """
     After remove_blocked_roads, at least one edge in the flood zone should
     have travel_time = 1e9.
@@ -535,6 +560,7 @@ def test_plan_all_routes_basic():
 
 
 def test_plan_all_routes_with_flood_mask():
+    skip_if_no_shapely()
     """
     Routes must still be found even when flood mask marks some roads blocked.
     The synthetic graph is connected enough to always find an alternative.
@@ -812,6 +838,124 @@ def test_reroute_after_new_blockage():
 # ── Main ──────────────────────────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+# ===============================================================================
+# -- SECTION 9: Multi-city routing — proves it works for any location
+# ===============================================================================
+
+CITY_PRESETS = {
+    "Delhi": {
+        "meta":  {"center_lat": 28.6139, "center_lon": 77.2090,
+                  "coverage_km": 5.0, "width_px": 640, "height_px": 640},
+        "bases": {
+            "ambulance":   {"name": "AIIMS Delhi",          "lat": 28.5672, "lon": 77.2100},
+            "rescue_team": {"name": "NDRF HQ Delhi",        "lat": 28.6500, "lon": 77.2700},
+            "boat":        {"name": "Yamuna River Depot",   "lat": 28.6400, "lon": 77.2500},
+        },
+    },
+    "Mumbai": {
+        "meta":  {"center_lat": 19.0760, "center_lon": 72.8777,
+                  "coverage_km": 5.0, "width_px": 640, "height_px": 640},
+        "bases": {
+            "ambulance":   {"name": "KEM Hospital",         "lat": 19.0010, "lon": 72.8405},
+            "rescue_team": {"name": "NDRF Mumbai",          "lat": 19.1200, "lon": 72.9000},
+            "boat":        {"name": "Mumbai Harbor Depot",  "lat": 18.9300, "lon": 72.8350},
+        },
+    },
+    "Chennai": {
+        "meta":  {"center_lat": 13.0827, "center_lon": 80.2707,
+                  "coverage_km": 5.0, "width_px": 640, "height_px": 640},
+        "bases": {
+            "ambulance":   {"name": "Govt Hospital Chennai","lat": 13.0550, "lon": 80.2700},
+            "rescue_team": {"name": "NDRF Chennai",         "lat": 13.1100, "lon": 80.2900},
+            "boat":        {"name": "Marina Beach Depot",   "lat": 13.0500, "lon": 80.2820},
+        },
+    },
+    "Prayagraj": {
+        "meta":  {"center_lat": 25.435, "center_lon": 81.846,
+                  "coverage_km": 5.0, "width_px": 640, "height_px": 640},
+        "bases": {
+            "ambulance":   {"name": "District Hospital",   "lat": 25.440, "lon": 81.840},
+            "rescue_team": {"name": "NDRF Station",        "lat": 25.430, "lon": 81.855},
+            "boat":        {"name": "Ganga River Depot",   "lat": 25.425, "lon": 81.848},
+        },
+    },
+}
+
+
+def _run_city_routing(city_name):
+    from agents.route_agent.route_agent import plan_all_routes
+    preset = CITY_PRESETS[city_name]
+    routes = plan_all_routes(
+        image_meta           = preset["meta"],
+        resource_assignments = {"Z35": {"ambulances": 1, "rescue_teams": 1}, "Z72": {"boats": 1}},
+        base_locations       = preset["bases"],
+        use_real_osm         = False,
+    )
+    assert len(routes) == 3, f"{city_name}: expected 3 routes, got {len(routes)}"
+    for r in routes:
+        assert r["success"], f"{city_name} route failed: {r.get('error')}"
+    # KEY: all three routes together must have some non-zero distance
+    total = sum(r["distance_km"] for r in routes)
+    assert total > 0, (
+        f"{city_name}: all routes are 0 km. "
+        "Synthetic graph not centred on this city (BUG FIX: pass center coords to build_synthetic_graph)."
+    )
+    for r in routes:
+        for lat, lon in r["waypoints"]:
+            assert 8 < lat < 37,  f"{city_name}: waypoint lat={lat} outside India"
+            assert 68 < lon < 98, f"{city_name}: waypoint lon={lon} outside India"
+    return routes
+
+
+def test_routing_delhi():
+    """Delhi routing must produce real non-zero distances."""
+    _run_city_routing("Delhi")
+
+
+def test_routing_mumbai():
+    """Mumbai routing must produce real non-zero distances."""
+    _run_city_routing("Mumbai")
+
+
+def test_routing_chennai():
+    """Chennai routing must produce real non-zero distances."""
+    _run_city_routing("Chennai")
+
+
+def test_routing_prayagraj():
+    """Prayagraj (default) must still work correctly."""
+    _run_city_routing("Prayagraj")
+
+
+def test_routing_different_cities_give_different_waypoints():
+    """
+    Routes in Delhi and Mumbai must produce waypoints in different lat/lon areas,
+    proving each city uses its own locally-centred synthetic graph.
+    """
+    from agents.route_agent.route_agent import plan_all_routes
+
+    city_waypoints = {}
+    for city in ["Delhi", "Mumbai", "Prayagraj"]:
+        preset = CITY_PRESETS[city]
+        routes = plan_all_routes(
+            image_meta           = preset["meta"],
+            resource_assignments = {"Z35": {"ambulances": 1}},
+            base_locations       = preset["bases"],
+            use_real_osm         = False,
+        )
+        if routes and routes[0]["waypoints"]:
+            city_waypoints[city] = routes[0]["waypoints"][0]  # first waypoint
+
+    assert len(city_waypoints) == 3, "All three cities should have waypoints"
+    # Waypoints must differ across cities (they're in completely different regions)
+    lats = [v[0] for v in city_waypoints.values()]
+    assert max(lats) - min(lats) > 1.0, (
+        "Delhi, Mumbai, Prayagraj waypoints are too close in latitude — "
+        "synthetic graph is probably still hardcoded to one location."
+    )
+
+
 if __name__ == "__main__":
     print("\n" + "="*65)
     print("  CRISIS MANAGEMENT — ROUTE AGENT TEST SUITE")
@@ -869,6 +1013,13 @@ if __name__ == "__main__":
         ("reroute() dynamic blockage",  [
             test_reroute_after_new_blockage,
         ]),
+        ("Multi-city routing (Delhi/Mumbai/Chennai/Prayagraj)", [
+            test_routing_delhi,
+            test_routing_mumbai,
+            test_routing_chennai,
+            test_routing_prayagraj,
+            test_routing_different_cities_give_different_waypoints,
+        ]),
     ]
 
     total_pass = 0
@@ -880,21 +1031,24 @@ if __name__ == "__main__":
             run_test(test_fn.__name__.replace("test_", ""), test_fn)
 
     # Summary
-    passed = sum(1 for _, ok, _ in _results if ok)
-    failed = sum(1 for _, ok, _ in _results if not ok)
-    total  = len(_results)
+    passed  = sum(1 for _, ok, _ in _results if ok is True)
+    failed  = sum(1 for _, ok, _ in _results if ok is False)
+    skipped = sum(1 for _, ok, _ in _results if ok is None)
+    total   = len(_results)
 
     print("\n" + "="*65)
-    print(f"  RESULTS:  {passed}/{total} passed", end="")
+    print(f"  RESULTS:  {passed}/{total-skipped} passed", end="")
+    if skipped:
+        print(f"  |  {skipped} skipped (missing optional deps)", end="")
     if failed:
         print(f"  |  {failed} FAILED")
         print("\n  Failed tests:")
         for name, ok, err in _results:
-            if not ok:
+            if ok is False:
                 print(f"    ✗ {name}")
                 print(f"      {err}")
     else:
-        print("  — ALL PASSED ✅")
+        print("  — ALL PASSED ✅" if not skipped else "  ✅")
     print("="*65 + "\n")
 
     sys.exit(0 if failed == 0 else 1)

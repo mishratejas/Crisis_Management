@@ -6,7 +6,8 @@ device = 0 if torch.cuda.is_available() else "cpu"
 print(f"[Debris Detection] Using device: {'GPU' if device == 0 else 'CPU'}")
 
 # ── Load model with verification ─────────────────────────────────────────────
-MODEL_PATH = r"agents\vision_agent\best_debris.pt"
+import os
+MODEL_PATH = os.path.join("agents", "vision_agent", "best_debris.pt")  # FIX: was Windows-only backslash path
 try:
     model = YOLO(MODEL_PATH)
     model.to(device)

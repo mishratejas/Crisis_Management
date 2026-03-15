@@ -165,17 +165,40 @@ def nearest_node(G: nx.MultiDiGraph, lat: float, lon: float) -> int:
     """
     Return the OSM node ID of the road intersection closest to (lat, lon).
 
+    FIX BUG: ox.distance.nearest_nodes() requires scikit-learn when the graph
+    is *unprojected* (coordinates in lon/lat degrees).  We project the graph
+    to a local UTM CRS first, call nearest_nodes on the projected copy, then
+    return the matching node ID from the original graph.  This avoids the
+    scikit-learn dependency entirely.
+
     FIX 3: ox.nearest_nodes() was moved to ox.distance.nearest_nodes() in
     OSMnx ≥ 1.x.  We try the new location first, fall back to the old one.
     """
     if not OSMNX_AVAILABLE:
         raise ImportError("Install osmnx: pip install osmnx")
+
+    # Project to UTM so nearest_nodes uses a Cartesian k-d tree (no sklearn needed)
     try:
-        # OSMnx ≥ 1.x  (current)
-        return ox.distance.nearest_nodes(G, X=lon, Y=lat)
-    except AttributeError:
-        # OSMnx < 1.x  (legacy)
-        return ox.nearest_nodes(G, X=lon, Y=lat)
+        G_proj = ox.project_graph(G)
+        # Also project the query point into the same CRS
+        import pyproj
+        crs = G_proj.graph.get("crs", "EPSG:4326")
+        transformer = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        x_proj, y_proj = transformer.transform(lon, lat)
+        try:
+            return ox.distance.nearest_nodes(G_proj, X=x_proj, Y=y_proj)
+        except AttributeError:
+            return ox.nearest_nodes(G_proj, X=x_proj, Y=y_proj)
+    except Exception:
+        # Final fallback: manual Euclidean search in degree-space (always works)
+        best_node = None
+        best_dist = float("inf")
+        for nid, data in G.nodes(data=True):
+            d = ((data["y"] - lat) ** 2 + (data["x"] - lon) ** 2) ** 0.5
+            if d < best_dist:
+                best_dist = d
+                best_node = nid
+        return best_node
 
 
 # ── 3. Convert segmentation mask → blocked polygons ──────────────────────────
