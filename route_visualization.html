@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crisis Route Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root {
+  --bg:       #0a0c10;
+  --panel:    #0f1218;
+  --border:   #1e2530;
+  --accent:   #ff4444;
+  --amber:    #f5a623;
+  --cyan:     #00d4ff;
+  --green:    #00ff88;
+  --purple:   #9b59ff;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --ambulance:#00d4ff;
+  --rescue:   #00ff88;
+  --boat:     #9b59ff;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Syne', sans-serif;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 52px 1fr;
+  grid-template-columns: 340px 1fr;
+  overflow: hidden;
+}
+
+/* ── TOP BAR ── */
+header {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 20px;
+  position: relative;
+}
+.logo {
+  font-family: 'Space Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+.logo span { color: var(--text); }
+.pulse-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(0,255,136,0.4); }
+  50%      { opacity:.7; box-shadow: 0 0 0 6px rgba(0,255,136,0); }
+}
+.header-stats {
+  display: flex;
+  gap: 24px;
+  margin-left: auto;
+}
+.hstat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.hstat-val {
+  font-family: 'Space Mono', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+.hstat-lbl {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+.city-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 16px;
+}
+.city-tab {
+  padding: 6px 14px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all .15s;
+  text-transform: uppercase;
+}
+.city-tab:hover { border-color: var(--accent); color: var(--text); }
+.city-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ── SIDEBAR ── */
+aside {
+  grid-row: 2;
+  grid-column: 1;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-title {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.city-name {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+.city-coords {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* ── ROUTE LIST ── */
+.route-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+.route-list::-webkit-scrollbar { width: 4px; }
+.route-list::-webkit-scrollbar-track { background: transparent; }
+.route-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.zone-group { margin-bottom: 14px; }
+.zone-label {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--muted);
+  text-transform: uppercase;
+  padding: 0 6px 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.zone-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.zone-tag {
+  font-size: 9px;
+  padding: 2px 6px;
+  background: rgba(255,68,68,.15);
+  border: 1px solid rgba(255,68,68,.3);
+  color: var(--accent);
+  border-radius: 2px;
+}
+
+.route-card {
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: all .15s;
+  position: relative;
+  overflow: hidden;
+}
+.route-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.015));
+  opacity: 0;
+  transition: opacity .15s;
+}
+.route-card:hover { border-color: var(--border); background: rgba(255,255,255,.04); }
+.route-card:hover::before { opacity: 1; }
+.route-card.active { background: rgba(255,255,255,.06); }
+.route-card.type-ambulances  { border-left-color: var(--ambulance); }
+.route-card.type-ambulance   { border-left-color: var(--ambulance); }
+.route-card.type-rescue_teams{ border-left-color: var(--rescue); }
+.route-card.type-rescue_team { border-left-color: var(--rescue); }
+.route-card.type-boats       { border-left-color: var(--boat); }
+.route-card.type-boat        { border-left-color: var(--boat); }
+
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.resource-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.resource-icon { font-size: 14px; }
+.unit-count {
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  padding: 2px 5px;
+  border-radius: 2px;
+  color: #fff;
+}
+.route-meta {
+  display: flex;
+  gap: 12px;
+}
+.meta-item {
+  display: flex;
+  flex-direction: column;
+}
+.meta-val {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+.meta-lbl {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.route-from {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 4px;
+}
+.route-from span { color: var(--text); }
+
+/* ── LEGEND ── */
+.legend {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.leg-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: .5px;
+}
+.leg-line {
+  width: 20px;
+  height: 2px;
+  border-radius: 1px;
+}
+.leg-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid;
+}
+
+/* ── MAP ── */
+#map {
+  grid-row: 2;
+  grid-column: 2;
+  background: #0d1117;
+}
+
+/* Leaflet custom styles */
+.leaflet-tile-pane { filter: brightness(.7) saturate(.5) hue-rotate(180deg); }
+.leaflet-control-attribution { display: none !important; }
+.leaflet-control-zoom a {
+  background: var(--panel) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+/* Custom markers */
+.zone-marker-label {
+  background: rgba(255,68,68,.15);
+  border: 1px solid rgba(255,68,68,.5);
+  color: var(--accent);
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 7px;
+  white-space: nowrap;
+  backdrop-filter: blur(4px);
+}
+.base-marker-label {
+  background: rgba(10,12,16,.85);
+  border: 1px solid;
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  backdrop-filter: blur(4px);
+}
+.waypoint-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  background: var(--bg);
+}
+
+/* ── DETAIL PANEL (bottom-right overlay) ── */
+#detail-panel {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 280px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 16px;
+  display: none;
+  z-index: 1000;
+  font-size: 12px;
+}
+#detail-panel.visible { display: block; animation: slideUp .2s ease; }
+@keyframes slideUp {
+  from { transform: translateY(10px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.detail-close {
+  position: absolute;
+  top: 10px; right: 12px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.detail-close:hover { color: var(--text); }
+.detail-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  padding-right: 20px;
+}
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.detail-row:last-child { border: none; }
+.detail-key { color: var(--muted); }
+.detail-val { font-family: 'Space Mono', monospace; font-weight: 700; }
+
+/* ── GRID OVERLAY toggle ── */
+.map-controls {
+  position: absolute;
+  top: 70px;
+  right: 10px;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.map-btn {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: all .15s;
+}
+.map-btn:hover, .map-btn.active {
+  background: rgba(255,68,68,.1);
+  border-color: var(--accent);
+  color: var(--text);
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">CRISIS<span>MGT</span></div>
+  <div class="pulse-dot"></div>
+  <div class="city-tabs" id="cityTabs"></div>
+  <div class="header-stats">
+    <div class="hstat">
+      <div class="hstat-val" id="hTotalRoutes" style="color:var(--cyan)">0</div>
+      <div class="hstat-lbl">Routes</div>
+    </div>
+    <div class="hstat">
+      <div class="hstat-val" id="hTotalDist" style="color:var(--amber)">0</div>
+      <div class="hstat-lbl">Total km</div>
+    </div>
+    <div class="hstat">
+      <div class="hstat-val" id="hTotalUnits" style="color:var(--green)">0</div>
+      <div class="hstat-lbl">Units</div>
+    </div>
+    <div class="hstat">
+      <div class="hstat-val" id="hMaxETA" style="color:var(--purple)">0</div>
+      <div class="hstat-lbl">Max ETA min</div>
+    </div>
+  </div>
+</header>
+
+<aside>
+  <div class="sidebar-header">
+    <div class="sidebar-title">Active City</div>
+    <div class="city-name" id="sidebarCityName">—</div>
+    <div class="city-coords" id="sidebarCoords">—</div>
+  </div>
+  <div class="route-list" id="routeList"></div>
+  <div class="legend">
+    <div class="leg-item"><div class="leg-line" style="background:var(--ambulance)"></div> Ambulance</div>
+    <div class="leg-item"><div class="leg-line" style="background:var(--rescue)"></div> Rescue Team</div>
+    <div class="leg-item"><div class="leg-line" style="background:var(--boat)"></div> Boat</div>
+    <div class="leg-item"><div class="leg-dot" style="border-color:var(--accent)"></div> Crisis Zone</div>
+    <div class="leg-item"><div class="leg-dot" style="border-color:var(--amber)"></div> Base</div>
+  </div>
+</aside>
+
+<div id="map"></div>
+
+<div class="map-controls">
+  <button class="map-btn" id="btnGrid" onclick="toggleGrid()">Grid</button>
+  <button class="map-btn active" id="btnRoutes" onclick="toggleRoutes()">Routes</button>
+  <button class="map-btn active" id="btnZones" onclick="toggleZones()">Zones</button>
+  <button class="map-btn active" id="btnBases" onclick="toggleBases()">Bases</button>
+</div>
+
+<div id="detail-panel">
+  <span class="detail-close" onclick="closeDetail()">✕ CLOSE</span>
+  <div class="detail-title" id="detailTitle"></div>
+  <div id="detailRows"></div>
+</div>
+
+<script>
+// ── EMBEDDED ROUTE DATA ─────────────────────────────────────────────────────
+const ROUTE_DATA = {"Delhi":{"meta":{"center_lat":28.6139,"center_lon":77.209,"coverage_km":5.0,"width_px":640,"height_px":640},"routes":[{"zone":"Z35","resource_type":"ambulances","origin":"AIIMS Delhi","destination_latlon":[28.620657,77.211566],"success":true,"error":null,"waypoints":[[28.6089,77.209],[28.6089,77.203304],[28.6139,77.203304],[28.6189,77.203304],[28.6189,77.209]],"distance_km":2.374,"eta_minutes":3.56,"blocked_roads_avoided":0,"unit_count":2},{"zone":"Z35","resource_type":"rescue_teams","origin":"NDRF HQ Delhi","destination_latlon":[28.620657,77.211566],"success":true,"error":null,"waypoints":[[28.6189,77.214696],[28.6189,77.209]],"distance_km":0.632,"eta_minutes":0.95,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z72","resource_type":"boats","origin":"Yamuna River Depot","destination_latlon":[28.602639,77.196172],"success":true,"error":null,"waypoints":[[28.6189,77.214696],[28.6139,77.214696],[28.6089,77.214696],[28.6089,77.209],[28.6089,77.203304]],"distance_km":2.374,"eta_minutes":3.56,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z72","resource_type":"rescue_teams","origin":"NDRF HQ Delhi","destination_latlon":[28.602639,77.196172],"success":true,"error":null,"waypoints":[[28.6189,77.214696],[28.6139,77.214696],[28.6089,77.214696],[28.6089,77.209],[28.6089,77.203304]],"distance_km":2.374,"eta_minutes":3.56,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z13","resource_type":"ambulances","origin":"AIIMS Delhi","destination_latlon":[28.629666,77.201303],"success":true,"error":null,"waypoints":[[28.6089,77.209],[28.6089,77.203304],[28.6139,77.203304],[28.6189,77.203304]],"distance_km":1.742,"eta_minutes":2.61,"blocked_roads_avoided":0,"unit_count":1}],"zone_coords":{"Z00":[28.63417,77.18591],"Z01":[28.63417,77.191041],"Z02":[28.63417,77.196172],"Z03":[28.63417,77.201303],"Z04":[28.63417,77.206434],"Z05":[28.63417,77.211566],"Z06":[28.63417,77.216697],"Z07":[28.63417,77.221828],"Z08":[28.63417,77.226959],"Z09":[28.63417,77.23209],"Z10":[28.629666,77.18591],"Z11":[28.629666,77.191041],"Z12":[28.629666,77.196172],"Z13":[28.629666,77.201303],"Z14":[28.629666,77.206434],"Z15":[28.629666,77.211566],"Z16":[28.629666,77.216697],"Z17":[28.629666,77.221828],"Z18":[28.629666,77.226959],"Z19":[28.629666,77.23209],"Z20":[28.625161,77.18591],"Z21":[28.625161,77.191041],"Z22":[28.625161,77.196172],"Z23":[28.625161,77.201303],"Z24":[28.625161,77.206434],"Z25":[28.625161,77.211566],"Z26":[28.625161,77.216697],"Z27":[28.625161,77.221828],"Z28":[28.625161,77.226959],"Z29":[28.625161,77.23209],"Z30":[28.620657,77.18591],"Z31":[28.620657,77.191041],"Z32":[28.620657,77.196172],"Z33":[28.620657,77.201303],"Z34":[28.620657,77.206434],"Z35":[28.620657,77.211566],"Z36":[28.620657,77.216697],"Z37":[28.620657,77.221828],"Z38":[28.620657,77.226959],"Z39":[28.620657,77.23209],"Z40":[28.616152,77.18591],"Z41":[28.616152,77.191041],"Z42":[28.616152,77.196172],"Z43":[28.616152,77.201303],"Z44":[28.616152,77.206434],"Z45":[28.616152,77.211566],"Z46":[28.616152,77.216697],"Z47":[28.616152,77.221828],"Z48":[28.616152,77.226959],"Z49":[28.616152,77.23209],"Z50":[28.611648,77.18591],"Z51":[28.611648,77.191041],"Z52":[28.611648,77.196172],"Z53":[28.611648,77.201303],"Z54":[28.611648,77.206434],"Z55":[28.611648,77.211566],"Z56":[28.611648,77.216697],"Z57":[28.611648,77.221828],"Z58":[28.611648,77.226959],"Z59":[28.611648,77.23209],"Z60":[28.607143,77.18591],"Z61":[28.607143,77.191041],"Z62":[28.607143,77.196172],"Z63":[28.607143,77.201303],"Z64":[28.607143,77.206434],"Z65":[28.607143,77.211566],"Z66":[28.607143,77.216697],"Z67":[28.607143,77.221828],"Z68":[28.607143,77.226959],"Z69":[28.607143,77.23209],"Z70":[28.602639,77.18591],"Z71":[28.602639,77.191041],"Z72":[28.602639,77.196172],"Z73":[28.602639,77.201303],"Z74":[28.602639,77.206434],"Z75":[28.602639,77.211566],"Z76":[28.602639,77.216697],"Z77":[28.602639,77.221828],"Z78":[28.602639,77.226959],"Z79":[28.602639,77.23209],"Z80":[28.598134,77.18591],"Z81":[28.598134,77.191041],"Z82":[28.598134,77.196172],"Z83":[28.598134,77.201303],"Z84":[28.598134,77.206434],"Z85":[28.598134,77.211566],"Z86":[28.598134,77.216697],"Z87":[28.598134,77.221828],"Z88":[28.598134,77.226959],"Z89":[28.598134,77.23209],"Z90":[28.59363,77.18591],"Z91":[28.59363,77.191041],"Z92":[28.59363,77.196172],"Z93":[28.59363,77.201303],"Z94":[28.59363,77.206434],"Z95":[28.59363,77.211566],"Z96":[28.59363,77.216697],"Z97":[28.59363,77.221828],"Z98":[28.59363,77.226959],"Z99":[28.59363,77.23209]},"bases":[{"name":"AIIMS Delhi","lat":28.5672,"lon":77.21,"type":"ambulance"},{"name":"NDRF HQ Delhi","lat":28.65,"lon":77.27,"type":"rescue_team"},{"name":"Yamuna River Depot","lat":28.64,"lon":77.25,"type":"boat"}],"assignments":{"Z35":{"ambulances":2,"rescue_teams":1},"Z72":{"boats":1,"rescue_teams":1},"Z13":{"ambulances":1}}},"Mumbai":{"meta":{"center_lat":19.076,"center_lon":72.8777,"coverage_km":5.0,"width_px":640,"height_px":640},"routes":[{"zone":"Z35","resource_type":"ambulances","origin":"KEM Hospital","destination_latlon":[19.082757,72.880083],"success":true,"error":null,"waypoints":[[19.071,72.872409],[19.076,72.872409],[19.081,72.872409],[19.081,72.8777]],"distance_km":1.697,"eta_minutes":2.55,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z35","resource_type":"rescue_teams","origin":"NDRF Mumbai","destination_latlon":[19.082757,72.880083],"success":true,"error":null,"waypoints":[[19.081,72.882991],[19.081,72.8777]],"distance_km":0.587,"eta_minutes":0.88,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z72","resource_type":"boats","origin":"Mumbai Harbor Depot","destination_latlon":[19.064739,72.865784],"success":true,"error":null,"waypoints":[[19.071,72.872409]],"distance_km":0.0,"eta_minutes":0.0,"blocked_roads_avoided":0,"unit_count":2},{"zone":"Z54","resource_type":"rescue_teams","origin":"NDRF Mumbai","destination_latlon":[19.073748,72.875317],"success":true,"error":null,"waypoints":[[19.081,72.882991],[19.076,72.882991],[19.076,72.8777]],"distance_km":1.142,"eta_minutes":1.71,"blocked_roads_avoided":0,"unit_count":2}],"zone_coords":{"Z00":[19.09627,72.856252],"Z01":[19.09627,72.861018],"Z02":[19.09627,72.865784],"Z03":[19.09627,72.870551],"Z04":[19.09627,72.875317],"Z05":[19.09627,72.880083],"Z06":[19.09627,72.884849],"Z07":[19.09627,72.889616],"Z08":[19.09627,72.894382],"Z09":[19.09627,72.899148],"Z10":[19.091766,72.856252],"Z11":[19.091766,72.861018],"Z12":[19.091766,72.865784],"Z13":[19.091766,72.870551],"Z14":[19.091766,72.875317],"Z15":[19.091766,72.880083],"Z16":[19.091766,72.884849],"Z17":[19.091766,72.889616],"Z18":[19.091766,72.894382],"Z19":[19.091766,72.899148],"Z20":[19.087261,72.856252],"Z21":[19.087261,72.861018],"Z22":[19.087261,72.865784],"Z23":[19.087261,72.870551],"Z24":[19.087261,72.875317],"Z25":[19.087261,72.880083],"Z26":[19.087261,72.884849],"Z27":[19.087261,72.889616],"Z28":[19.087261,72.894382],"Z29":[19.087261,72.899148],"Z30":[19.082757,72.856252],"Z31":[19.082757,72.861018],"Z32":[19.082757,72.865784],"Z33":[19.082757,72.870551],"Z34":[19.082757,72.875317],"Z35":[19.082757,72.880083],"Z36":[19.082757,72.884849],"Z37":[19.082757,72.889616],"Z38":[19.082757,72.894382],"Z39":[19.082757,72.899148],"Z40":[19.078252,72.856252],"Z41":[19.078252,72.861018],"Z42":[19.078252,72.865784],"Z43":[19.078252,72.870551],"Z44":[19.078252,72.875317],"Z45":[19.078252,72.880083],"Z46":[19.078252,72.884849],"Z47":[19.078252,72.889616],"Z48":[19.078252,72.894382],"Z49":[19.078252,72.899148],"Z50":[19.073748,72.856252],"Z51":[19.073748,72.861018],"Z52":[19.073748,72.865784],"Z53":[19.073748,72.870551],"Z54":[19.073748,72.875317],"Z55":[19.073748,72.880083],"Z56":[19.073748,72.884849],"Z57":[19.073748,72.889616],"Z58":[19.073748,72.894382],"Z59":[19.073748,72.899148],"Z60":[19.069243,72.856252],"Z61":[19.069243,72.861018],"Z62":[19.069243,72.865784],"Z63":[19.069243,72.870551],"Z64":[19.069243,72.875317],"Z65":[19.069243,72.880083],"Z66":[19.069243,72.884849],"Z67":[19.069243,72.889616],"Z68":[19.069243,72.894382],"Z69":[19.069243,72.899148],"Z70":[19.064739,72.856252],"Z71":[19.064739,72.861018],"Z72":[19.064739,72.865784],"Z73":[19.064739,72.870551],"Z74":[19.064739,72.875317],"Z75":[19.064739,72.880083],"Z76":[19.064739,72.884849],"Z77":[19.064739,72.889616],"Z78":[19.064739,72.894382],"Z79":[19.064739,72.899148],"Z80":[19.060234,72.856252],"Z81":[19.060234,72.861018],"Z82":[19.060234,72.865784],"Z83":[19.060234,72.870551],"Z84":[19.060234,72.875317],"Z85":[19.060234,72.880083],"Z86":[19.060234,72.884849],"Z87":[19.060234,72.889616],"Z88":[19.060234,72.894382],"Z89":[19.060234,72.899148],"Z90":[19.05573,72.856252],"Z91":[19.05573,72.861018],"Z92":[19.05573,72.865784],"Z93":[19.05573,72.870551],"Z94":[19.05573,72.875317],"Z95":[19.05573,72.880083],"Z96":[19.05573,72.884849],"Z97":[19.05573,72.889616],"Z98":[19.05573,72.894382],"Z99":[19.05573,72.899148]},"bases":[{"name":"KEM Hospital","lat":19.001,"lon":72.8405,"type":"ambulance"},{"name":"NDRF Mumbai","lat":19.12,"lon":72.9,"type":"rescue_team"},{"name":"Mumbai Harbor Depot","lat":18.93,"lon":72.835,"type":"boat"}],"assignments":{"Z35":{"ambulances":1,"rescue_teams":1},"Z72":{"boats":2},"Z54":{"rescue_teams":2}}},"Chennai":{"meta":{"center_lat":13.0827,"center_lon":80.2707,"coverage_km":5.0,"width_px":640,"height_px":640},"routes":[{"zone":"Z35","resource_type":"ambulances","origin":"Govt Hospital Chennai","destination_latlon":[13.089457,80.273012],"success":true,"error":null,"waypoints":[[13.0777,80.2707],[13.0777,80.265567],[13.0827,80.265567],[13.0877,80.265567],[13.0877,80.2707]],"distance_km":2.25,"eta_minutes":3.37,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z35","resource_type":"rescue_teams","origin":"NDRF Chennai","destination_latlon":[13.089457,80.273012],"success":true,"error":null,"waypoints":[[13.0877,80.275833],[13.0877,80.2707]],"distance_km":0.57,"eta_minutes":0.85,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z72","resource_type":"boats","origin":"Marina Beach Depot","destination_latlon":[13.071439,80.259139],"success":true,"error":null,"waypoints":[[13.0777,80.275833],[13.0777,80.2707],[13.0777,80.265567]],"distance_km":1.14,"eta_minutes":1.71,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z28","resource_type":"ambulances","origin":"Govt Hospital Chennai","destination_latlon":[13.093961,80.286886],"success":true,"error":null,"waypoints":[[13.0777,80.2707],[13.0777,80.275833],[13.0827,80.275833],[13.0877,80.275833]],"distance_km":1.68,"eta_minutes":2.52,"blocked_roads_avoided":0,"unit_count":1}],"zone_coords":{"Z00":[13.10297,80.24989],"Z01":[13.10297,80.254514],"Z02":[13.10297,80.259139],"Z03":[13.10297,80.263763],"Z04":[13.10297,80.268388],"Z05":[13.10297,80.273012],"Z06":[13.10297,80.277637],"Z07":[13.10297,80.282261],"Z08":[13.10297,80.286886],"Z09":[13.10297,80.29151],"Z10":[13.098466,80.24989],"Z11":[13.098466,80.254514],"Z12":[13.098466,80.259139],"Z13":[13.098466,80.263763],"Z14":[13.098466,80.268388],"Z15":[13.098466,80.273012],"Z16":[13.098466,80.277637],"Z17":[13.098466,80.282261],"Z18":[13.098466,80.286886],"Z19":[13.098466,80.29151],"Z20":[13.093961,80.24989],"Z21":[13.093961,80.254514],"Z22":[13.093961,80.259139],"Z23":[13.093961,80.263763],"Z24":[13.093961,80.268388],"Z25":[13.093961,80.273012],"Z26":[13.093961,80.277637],"Z27":[13.093961,80.282261],"Z28":[13.093961,80.286886],"Z29":[13.093961,80.29151],"Z30":[13.089457,80.24989],"Z31":[13.089457,80.254514],"Z32":[13.089457,80.259139],"Z33":[13.089457,80.263763],"Z34":[13.089457,80.268388],"Z35":[13.089457,80.273012],"Z36":[13.089457,80.277637],"Z37":[13.089457,80.282261],"Z38":[13.089457,80.286886],"Z39":[13.089457,80.29151],"Z40":[13.084952,80.24989],"Z41":[13.084952,80.254514],"Z42":[13.084952,80.259139],"Z43":[13.084952,80.263763],"Z44":[13.084952,80.268388],"Z45":[13.084952,80.273012],"Z46":[13.084952,80.277637],"Z47":[13.084952,80.282261],"Z48":[13.084952,80.286886],"Z49":[13.084952,80.29151],"Z50":[13.080448,80.24989],"Z51":[13.080448,80.254514],"Z52":[13.080448,80.259139],"Z53":[13.080448,80.263763],"Z54":[13.080448,80.268388],"Z55":[13.080448,80.273012],"Z56":[13.080448,80.277637],"Z57":[13.080448,80.282261],"Z58":[13.080448,80.286886],"Z59":[13.080448,80.29151],"Z60":[13.075943,80.24989],"Z61":[13.075943,80.254514],"Z62":[13.075943,80.259139],"Z63":[13.075943,80.263763],"Z64":[13.075943,80.268388],"Z65":[13.075943,80.273012],"Z66":[13.075943,80.277637],"Z67":[13.075943,80.282261],"Z68":[13.075943,80.286886],"Z69":[13.075943,80.29151],"Z70":[13.071439,80.24989],"Z71":[13.071439,80.254514],"Z72":[13.071439,80.259139],"Z73":[13.071439,80.263763],"Z74":[13.071439,80.268388],"Z75":[13.071439,80.273012],"Z76":[13.071439,80.277637],"Z77":[13.071439,80.282261],"Z78":[13.071439,80.286886],"Z79":[13.071439,80.29151],"Z80":[13.066934,80.24989],"Z81":[13.066934,80.254514],"Z82":[13.066934,80.259139],"Z83":[13.066934,80.263763],"Z84":[13.066934,80.268388],"Z85":[13.066934,80.273012],"Z86":[13.066934,80.277637],"Z87":[13.066934,80.282261],"Z88":[13.066934,80.286886],"Z89":[13.066934,80.29151],"Z90":[13.06243,80.24989],"Z91":[13.06243,80.254514],"Z92":[13.06243,80.259139],"Z93":[13.06243,80.263763],"Z94":[13.06243,80.268388],"Z95":[13.06243,80.273012],"Z96":[13.06243,80.277637],"Z97":[13.06243,80.282261],"Z98":[13.06243,80.286886],"Z99":[13.06243,80.29151]},"bases":[{"name":"Govt Hospital Chennai","lat":13.055,"lon":80.27,"type":"ambulance"},{"name":"NDRF Chennai","lat":13.11,"lon":80.29,"type":"rescue_team"},{"name":"Marina Beach Depot","lat":13.05,"lon":80.282,"type":"boat"}],"assignments":{"Z35":{"ambulances":1,"rescue_teams":1},"Z72":{"boats":1},"Z28":{"ambulances":1}}},"Prayagraj":{"meta":{"center_lat":25.435,"center_lon":81.846,"coverage_km":5.0,"width_px":640,"height_px":640},"routes":[{"zone":"Z35","resource_type":"boats","origin":"Ganga River Depot","destination_latlon":[25.441757,81.848494],"success":true,"error":null,"waypoints":[[25.43,81.846],[25.43,81.840463],[25.435,81.840463],[25.44,81.840463],[25.44,81.846]],"distance_km":2.339,"eta_minutes":3.51,"blocked_roads_avoided":0,"unit_count":2},{"zone":"Z35","resource_type":"ambulances","origin":"District Hospital","destination_latlon":[25.441757,81.848494],"success":true,"error":null,"waypoints":[[25.44,81.840463],[25.44,81.846]],"distance_km":0.615,"eta_minutes":0.92,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z35","resource_type":"rescue_teams","origin":"NDRF Station","destination_latlon":[25.441757,81.848494],"success":true,"error":null,"waypoints":[[25.43,81.851537],[25.435,81.851537],[25.44,81.851537],[25.44,81.846]],"distance_km":1.725,"eta_minutes":2.59,"blocked_roads_avoided":0,"unit_count":2},{"zone":"Z01","resource_type":"boats","origin":"Ganga River Depot","destination_latlon":[25.45527,81.828542],"success":true,"error":null,"waypoints":[[25.43,81.846],[25.43,81.840463],[25.435,81.840463],[25.44,81.840463]],"distance_km":1.725,"eta_minutes":2.59,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z01","resource_type":"rescue_teams","origin":"NDRF Station","destination_latlon":[25.45527,81.828542],"success":true,"error":null,"waypoints":[[25.43,81.851537],[25.435,81.851537],[25.44,81.851537],[25.44,81.846],[25.44,81.840463]],"distance_km":2.339,"eta_minutes":3.51,"blocked_roads_avoided":0,"unit_count":1},{"zone":"Z72","resource_type":"ambulances","origin":"District Hospital","destination_latlon":[25.423739,81.83353],"success":true,"error":null,"waypoints":[[25.44,81.840463],[25.435,81.840463],[25.43,81.840463]],"distance_km":1.11,"eta_minutes":1.67,"blocked_roads_avoided":0,"unit_count":1}],"zone_coords":{"Z00":[25.45527,81.823554],"Z01":[25.45527,81.828542],"Z02":[25.45527,81.83353],"Z03":[25.45527,81.838518],"Z04":[25.45527,81.843506],"Z05":[25.45527,81.848494],"Z06":[25.45527,81.853482],"Z07":[25.45527,81.85847],"Z08":[25.45527,81.863458],"Z09":[25.45527,81.868446],"Z10":[25.450766,81.823554],"Z11":[25.450766,81.828542],"Z12":[25.450766,81.83353],"Z13":[25.450766,81.838518],"Z14":[25.450766,81.843506],"Z15":[25.450766,81.848494],"Z16":[25.450766,81.853482],"Z17":[25.450766,81.85847],"Z18":[25.450766,81.863458],"Z19":[25.450766,81.868446],"Z20":[25.446261,81.823554],"Z21":[25.446261,81.828542],"Z22":[25.446261,81.83353],"Z23":[25.446261,81.838518],"Z24":[25.446261,81.843506],"Z25":[25.446261,81.848494],"Z26":[25.446261,81.853482],"Z27":[25.446261,81.85847],"Z28":[25.446261,81.863458],"Z29":[25.446261,81.868446],"Z30":[25.441757,81.823554],"Z31":[25.441757,81.828542],"Z32":[25.441757,81.83353],"Z33":[25.441757,81.838518],"Z34":[25.441757,81.843506],"Z35":[25.441757,81.848494],"Z36":[25.441757,81.853482],"Z37":[25.441757,81.85847],"Z38":[25.441757,81.863458],"Z39":[25.441757,81.868446],"Z40":[25.437252,81.823554],"Z41":[25.437252,81.828542],"Z42":[25.437252,81.83353],"Z43":[25.437252,81.838518],"Z44":[25.437252,81.843506],"Z45":[25.437252,81.848494],"Z46":[25.437252,81.853482],"Z47":[25.437252,81.85847],"Z48":[25.437252,81.863458],"Z49":[25.437252,81.868446],"Z50":[25.432748,81.823554],"Z51":[25.432748,81.828542],"Z52":[25.432748,81.83353],"Z53":[25.432748,81.838518],"Z54":[25.432748,81.843506],"Z55":[25.432748,81.848494],"Z56":[25.432748,81.853482],"Z57":[25.432748,81.85847],"Z58":[25.432748,81.863458],"Z59":[25.432748,81.868446],"Z60":[25.428243,81.823554],"Z61":[25.428243,81.828542],"Z62":[25.428243,81.83353],"Z63":[25.428243,81.838518],"Z64":[25.428243,81.843506],"Z65":[25.428243,81.848494],"Z66":[25.428243,81.853482],"Z67":[25.428243,81.85847],"Z68":[25.428243,81.863458],"Z69":[25.428243,81.868446],"Z70":[25.423739,81.823554],"Z71":[25.423739,81.828542],"Z72":[25.423739,81.83353],"Z73":[25.423739,81.838518],"Z74":[25.423739,81.843506],"Z75":[25.423739,81.848494],"Z76":[25.423739,81.853482],"Z77":[25.423739,81.85847],"Z78":[25.423739,81.863458],"Z79":[25.423739,81.868446],"Z80":[25.419234,81.823554],"Z81":[25.419234,81.828542],"Z82":[25.419234,81.83353],"Z83":[25.419234,81.838518],"Z84":[25.419234,81.843506],"Z85":[25.419234,81.848494],"Z86":[25.419234,81.853482],"Z87":[25.419234,81.85847],"Z88":[25.419234,81.863458],"Z89":[25.419234,81.868446],"Z90":[25.41473,81.823554],"Z91":[25.41473,81.828542],"Z92":[25.41473,81.83353],"Z93":[25.41473,81.838518],"Z94":[25.41473,81.843506],"Z95":[25.41473,81.848494],"Z96":[25.41473,81.853482],"Z97":[25.41473,81.85847],"Z98":[25.41473,81.863458],"Z99":[25.41473,81.868446]},"bases":[{"name":"District Hospital","lat":25.44,"lon":81.84,"type":"ambulance"},{"name":"NDRF Station","lat":25.43,"lon":81.855,"type":"rescue_team"},{"name":"Ganga River Depot","lat":25.425,"lon":81.848,"type":"boat"}],"assignments":{"Z35":{"boats":2,"ambulances":1,"rescue_teams":2},"Z01":{"boats":1,"ambulances":0,"rescue_teams":1},"Z72":{"boats":0,"ambulances":1,"rescue_teams":0}}}};
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+const RESOURCE_CONFIG = {
+  ambulances:   { color: '#00d4ff', icon: '🚑', label: 'Ambulance'   },
+  ambulance:    { color: '#00d4ff', icon: '🚑', label: 'Ambulance'   },
+  rescue_teams: { color: '#00ff88', icon: '🛟', label: 'Rescue Team' },
+  rescue_team:  { color: '#00ff88', icon: '🛟', label: 'Rescue Team' },
+  boats:        { color: '#9b59ff', icon: '🚤', label: 'Boat'        },
+  boat:         { color: '#9b59ff', icon: '🚤', label: 'Boat'        },
+};
+
+function rcfg(type) {
+  return RESOURCE_CONFIG[type] || { color:'#aaa', icon:'📦', label: type };
+}
+
+// ── MAP INIT ─────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true, attributionControl: false });
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18
+}).addTo(map);
+
+// Layer groups
+const layerRoutes = L.layerGroup().addTo(map);
+const layerZones  = L.layerGroup().addTo(map);
+const layerBases  = L.layerGroup().addTo(map);
+const layerGrid   = L.layerGroup();   // not added by default
+
+let currentCity = null;
+let activeCardIdx = null;
+let showRoutes = true, showZones = true, showBases = true, showGrid = false;
+
+// ── CITY TABS ────────────────────────────────────────────────────────────────
+const tabsEl = document.getElementById('cityTabs');
+Object.keys(ROUTE_DATA).forEach((city, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'city-tab' + (i === 0 ? ' active' : '');
+  btn.textContent = city;
+  btn.onclick = () => switchCity(city);
+  tabsEl.appendChild(btn);
+});
+
+// ── SWITCH CITY ──────────────────────────────────────────────────────────────
+function switchCity(city) {
+  currentCity = city;
+  activeCardIdx = null;
+  closeDetail();
+
+  // update tabs
+  document.querySelectorAll('.city-tab').forEach(b => {
+    b.classList.toggle('active', b.textContent === city);
+  });
+
+  const d = ROUTE_DATA[city];
+  renderSidebar(city, d);
+  renderMap(city, d);
+  updateHeaderStats(d);
+}
+
+// ── SIDEBAR ──────────────────────────────────────────────────────────────────
+function renderSidebar(city, d) {
+  document.getElementById('sidebarCityName').textContent = city;
+  document.getElementById('sidebarCoords').textContent =
+    d.meta.center_lat.toFixed(4) + '°N  ' + d.meta.center_lon.toFixed(4) + '°E';
+
+  const listEl = document.getElementById('routeList');
+  listEl.innerHTML = '';
+
+  // Group routes by zone
+  const byZone = {};
+  d.routes.forEach((r, i) => {
+    if (!byZone[r.zone]) byZone[r.zone] = [];
+    byZone[r.zone].push({ ...r, _idx: i });
+  });
+
+  Object.entries(byZone).forEach(([zone, routes]) => {
+    const grp = document.createElement('div');
+    grp.className = 'zone-group';
+    grp.innerHTML = `<div class="zone-label"><span class="zone-tag">${zone}</span> CRISIS ZONE</div>`;
+
+    routes.forEach(r => {
+      const cfg = rcfg(r.resource_type);
+      const card = document.createElement('div');
+      card.className = `route-card type-${r.resource_type}`;
+      card.dataset.idx = r._idx;
+      card.innerHTML = `
+        <div class="card-top">
+          <div class="resource-badge">
+            <span class="resource-icon">${cfg.icon}</span>
+            <span style="color:${cfg.color}">${cfg.label}</span>
+            <span class="unit-count" style="background:${cfg.color}33;color:${cfg.color}">×${r.unit_count}</span>
+          </div>
+        </div>
+        <div class="route-meta">
+          <div class="meta-item">
+            <span class="meta-val" style="color:${cfg.color}">${r.distance_km}</span>
+            <span class="meta-lbl">km</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-val" style="color:var(--amber)">${r.eta_minutes}</span>
+            <span class="meta-lbl">min ETA</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-val">${r.waypoints.length}</span>
+            <span class="meta-lbl">stops</span>
+          </div>
+        </div>
+        <div class="route-from">from <span>${r.origin}</span></div>
+      `;
+      card.onclick = () => focusRoute(r._idx);
+      grp.appendChild(card);
+    });
+
+    listEl.appendChild(grp);
+  });
+}
+
+// ── MAP RENDER ───────────────────────────────────────────────────────────────
+function renderMap(city, d) {
+  layerRoutes.clearLayers();
+  layerZones.clearLayers();
+  layerBases.clearLayers();
+  layerGrid.clearLayers();
+
+  const bounds = [];
+
+  // ── Draw routes ────────────────────────────────────────────────
+  d.routes.forEach((r, i) => {
+    if (!r.success || r.waypoints.length < 2) return;
+    const cfg = rcfg(r.resource_type);
+
+    const coords = r.waypoints; // already [lat,lon]
+
+    // animated-ish dashed polyline
+    const line = L.polyline(coords, {
+      color: cfg.color,
+      weight: 2.5,
+      opacity: 0.75,
+      dashArray: '6 4',
+      lineJoin: 'round',
+    }).addTo(layerRoutes);
+
+    line.on('click', () => focusRoute(i));
+    line.on('mouseover', () => line.setStyle({ weight: 4, opacity: 1 }));
+    line.on('mouseout',  () => {
+      if (activeCardIdx !== i) line.setStyle({ weight: 2.5, opacity: 0.75 });
+    });
+
+    coords.forEach(pt => bounds.push(pt));
+
+    // origin arrow marker (base)
+    const orig = r.waypoints[0];
+    const arrow = L.circleMarker(orig, {
+      radius: 5, color: cfg.color,
+      fillColor: '#0a0c10', fillOpacity: 1, weight: 2
+    }).addTo(layerRoutes);
+    arrow.on('click', () => focusRoute(i));
+
+    // destination flag
+    const dest = r.waypoints[r.waypoints.length - 1];
+    L.circleMarker(dest, {
+      radius: 4, color: cfg.color,
+      fillColor: cfg.color, fillOpacity: 0.5, weight: 2
+    }).addTo(layerRoutes);
+  });
+
+  // ── Draw crisis zones ──────────────────────────────────────────
+  const zonesUsed = [...new Set(d.routes.map(r => r.zone))];
+  zonesUsed.forEach(zone => {
+    const coord = d.zone_coords[zone];
+    if (!coord) return;
+    const [lat, lon] = coord;
+
+    L.circleMarker([lat, lon], {
+      radius: 14,
+      color: '#ff4444',
+      fillColor: 'rgba(255,68,68,0.12)',
+      fillOpacity: 1,
+      weight: 2,
+      dashArray: '4 3',
+    }).addTo(layerZones);
+
+    L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="zone-marker-label">${zone}</div>`,
+        iconAnchor: [20, -10],
+      })
+    }).addTo(layerZones);
+
+    bounds.push([lat, lon]);
+  });
+
+  // ── Draw bases ─────────────────────────────────────────────────
+  d.bases.forEach(b => {
+    const cfg = rcfg(b.type);
+    L.circleMarker([b.lat, b.lon], {
+      radius: 8,
+      color: '#f5a623',
+      fillColor: 'rgba(245,166,35,0.15)',
+      fillOpacity: 1,
+      weight: 2,
+    }).addTo(layerBases);
+
+    L.marker([b.lat, b.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="base-marker-label" style="border-color:${cfg.color};color:${cfg.color}">${cfg.icon} ${b.name}</div>`,
+        iconAnchor: [0, -6],
+      })
+    }).addTo(layerBases);
+
+    bounds.push([b.lat, b.lon]);
+  });
+
+  // ── Draw zone grid (all 100) ───────────────────────────────────
+  Object.entries(d.zone_coords).forEach(([zid, coord]) => {
+    L.circleMarker(coord, {
+      radius: 2, color: 'rgba(255,68,68,0.25)',
+      fillColor: 'transparent', weight: 1,
+    }).addTo(layerGrid);
+  });
+
+  // ── Fit bounds ─────────────────────────────────────────────────
+  if (bounds.length > 0) {
+    map.fitBounds(L.latLngBounds(bounds).pad(0.15));
+  }
+}
+
+// ── FOCUS ROUTE ──────────────────────────────────────────────────────────────
+function focusRoute(idx) {
+  const d = ROUTE_DATA[currentCity];
+  const r = d.routes[idx];
+  if (!r) return;
+
+  activeCardIdx = idx;
+
+  // highlight card
+  document.querySelectorAll('.route-card').forEach(c => {
+    c.classList.toggle('active', parseInt(c.dataset.idx) === idx);
+  });
+
+  // fly to route
+  if (r.waypoints.length > 0) {
+    const latlngs = r.waypoints;
+    map.fitBounds(L.latLngBounds(latlngs).pad(0.3));
+  }
+
+  // show detail panel
+  const cfg = rcfg(r.resource_type);
+  document.getElementById('detailTitle').innerHTML =
+    `${cfg.icon} <span style="color:${cfg.color}">${cfg.label}</span> → ${r.zone}`;
+
+  const rows = [
+    ['From',        r.origin],
+    ['Units',       r.unit_count + 'x'],
+    ['Distance',    r.distance_km + ' km'],
+    ['ETA',         r.eta_minutes + ' min'],
+    ['Waypoints',   r.waypoints.length],
+    ['Destination', r.destination_latlon.map(v => v.toFixed(5)).join(', ')],
+    ['Status',      r.success ? '✓ ROUTED' : '✗ FAILED'],
+  ];
+
+  document.getElementById('detailRows').innerHTML = rows.map(([k,v]) =>
+    `<div class="detail-row"><span class="detail-key">${k}</span><span class="detail-val">${v}</span></div>`
+  ).join('');
+
+  document.getElementById('detail-panel').classList.add('visible');
+}
+
+// ── HEADER STATS ─────────────────────────────────────────────────────────────
+function updateHeaderStats(d) {
+  const routes = d.routes.filter(r => r.success);
+  const totalDist = routes.reduce((s,r) => s+r.distance_km, 0);
+  const totalUnits = routes.reduce((s,r) => s+r.unit_count, 0);
+  const maxETA = routes.reduce((m,r) => Math.max(m, r.eta_minutes), 0);
+
+  document.getElementById('hTotalRoutes').textContent = routes.length;
+  document.getElementById('hTotalDist').textContent   = totalDist.toFixed(1);
+  document.getElementById('hTotalUnits').textContent  = totalUnits;
+  document.getElementById('hMaxETA').textContent      = maxETA.toFixed(1);
+}
+
+// ── TOGGLE CONTROLS ──────────────────────────────────────────────────────────
+function toggleGrid() {
+  showGrid = !showGrid;
+  document.getElementById('btnGrid').classList.toggle('active', showGrid);
+  showGrid ? map.addLayer(layerGrid) : map.removeLayer(layerGrid);
+}
+function toggleRoutes() {
+  showRoutes = !showRoutes;
+  document.getElementById('btnRoutes').classList.toggle('active', showRoutes);
+  showRoutes ? map.addLayer(layerRoutes) : map.removeLayer(layerRoutes);
+}
+function toggleZones() {
+  showZones = !showZones;
+  document.getElementById('btnZones').classList.toggle('active', showZones);
+  showZones ? map.addLayer(layerZones) : map.removeLayer(layerZones);
+}
+function toggleBases() {
+  showBases = !showBases;
+  document.getElementById('btnBases').classList.toggle('active', showBases);
+  showBases ? map.addLayer(layerBases) : map.removeLayer(layerBases);
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('visible');
+  activeCardIdx = null;
+  document.querySelectorAll('.route-card').forEach(c => c.classList.remove('active'));
+}
+
+// ── BOOT ─────────────────────────────────────────────────────────────────────
+switchCity(Object.keys(ROUTE_DATA)[0]);
+</script>
+</body>
+</html>
