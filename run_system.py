@@ -18,7 +18,7 @@ def run_system():
                 "satellite_image": image,
                 "field_reports":   [],
                 "dispatch_config": {
-                    "send_sms":       False,
+                    "send_sms":       True,
                     "generate_audio": True,
                     "language":       "English",
                 }

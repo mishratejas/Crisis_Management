@@ -11,7 +11,7 @@ model = smp.Unet(
     classes=1
 )
 
-model.load_state_dict(torch.load("agents/vision_agent/unet_flood_model1.2.pth", map_location="cpu"))
+model.load_state_dict(torch.load("agents/vision_agent/unet_flood_modelN.pth", map_location="cpu"))
 model.eval()
 
 

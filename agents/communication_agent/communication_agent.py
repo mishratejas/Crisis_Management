@@ -49,6 +49,8 @@ dispatch_config = {
 }
 """
 
+
+
 from .gemini_client   import (
     generate_dispatch_instruction,
     summarize_field_reports,
@@ -138,7 +140,7 @@ def dispatch_all(
         # translate if not English
         if language.lower() != "english":
             instruction = translate_message(instruction, language)
-
+        
         instructions[zone] = instruction
         print(f"  Instruction generated ({len(instruction)} chars)")
 
