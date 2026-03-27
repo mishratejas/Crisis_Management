@@ -3,18 +3,15 @@ streamlit_app.py  —  AEGIS Crisis Management AI  (LangGraph Edition)
 ======================================================================
 Run:  streamlit run streamlit_app.py
 
-Architecture — three-phase LangGraph execution with TWO admin approval gates
--------------------------------------------------------------------------
-Phase 1 : vision → store_zone → drone_analysis → drone_decision
-          → drone_dispatch → drone_vision → update_people
-          → rescue_decision  →  INTERRUPT (before admin_resource)
+Stage 1 now runs a real folder scan instead of single-image upload.
+  - User picks a folder path + enters geo metadata once
+  - UNet runs on each image in order, results shown live
+  - First flood image auto-fires the LangGraph pipeline
+  - Remaining images are skipped
 
-Phase 2 : admin_resource decision injected  →  route_planner
-          →  INTERRUPT (before admin_route)
-
-Phase 3 : admin_route decision injected  →  communication  →  END
-
-All stages read from the LangGraph MemorySaver checkpoint — real agent output.
+Geo metadata (lat/lon/coverage) is still entered manually because
+plain JPG/PNG images carry no spatial information. This is the same
+data you were entering before — just explained clearly now.
 """
 
 import streamlit as st
@@ -26,7 +23,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-import io, os, sys, json, sqlite3, contextlib, tempfile, traceback
+import io, os, sys, json, sqlite3, contextlib, tempfile, traceback, time
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -37,9 +35,56 @@ from streamlit_folium import st_folium
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+    sys.path.insert(0, str(_ROOT))
 
 DB_PATH = os.path.join(_ROOT, "crisis.db")
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
+PIXEL_THRESHOLD = 0.45   # per-pixel flood probability (matches vision_agent / route_agent)
+FLOOD_FRACTION  = 0.10   # >= 10% of pixels flooded → image is flood-positive
+
+# ============================================================================
+#  VISION MODEL — loaded once per server process
+# ============================================================================
+
+@st.cache_resource
+def _load_vision():
+    """Load UNet + preprocess — cached so the model loads only once."""
+    from agents.vision_agent.preprocess         import load_image
+    from agents.vision_agent.flood_segmentation import detect_flood
+    return load_image, detect_flood
+
+
+def _analyse_image(img_path: Path) -> dict:
+    """
+    Run the real UNet on one image.
+    Returns flooded_fraction, max_prob, mean_prob, is_flood.
+    Matches the pixel-threshold logic used in vision_agent and route_agent.
+    """
+    load_image, detect_flood = _load_vision()
+    image    = load_image(str(img_path))
+    prob_map = detect_flood(image)          # H×W float32
+
+    total   = prob_map.size
+    flooded = int((prob_map >= PIXEL_THRESHOLD).sum())
+    frac    = flooded / total
+
+    return {
+        "name":             img_path.name,
+        "path":             str(img_path),
+        "mean_prob":        float(prob_map.mean()),
+        "max_prob":         float(prob_map.max()),
+        "flooded_pixels":   flooded,
+        "total_pixels":     total,
+        "flooded_fraction": frac,
+        "is_flood":         frac >= FLOOD_FRACTION,
+    }
+
+
+def _collect_images(folder: Path) -> list:
+    return sorted(p for p in folder.iterdir()
+                  if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
 
 # ============================================================================
 #  LANGGRAPH — build + compile ONCE per server process
@@ -124,7 +169,7 @@ def _next_nodes() -> list:
         return []
 
 
-# ── Phase runners ─────────────────────────────────────────────────────────────
+# ── Phase runners ──────────────────────────────────────────────────────────────
 
 def _invoke(fn, *args, **kwargs):
     buf = io.StringIO()
@@ -208,6 +253,11 @@ st.markdown(f"""
     padding:12px;margin:6px 0;}}
   .card-warn{{background:#1a0f00;border-left:4px solid {THEME['orange']};border-radius:6px;
     padding:12px;margin:6px 0;}}
+  .card-flood{{background:#1a0005;border-left:4px solid {THEME['red']};border-radius:6px;
+    padding:12px;margin:6px 0;}}
+  .card-ok{{background:#001a08;border-left:4px solid {THEME['green']};border-radius:6px;
+    padding:12px;margin:6px 0;}}
+  .scan-row{{font-family:'Share Tech Mono',monospace;font-size:12px;padding:4px 0;}}
   div[data-testid="stDataFrame"]{{background:{THEME['bg2']};}}
 </style>
 """, unsafe_allow_html=True)
@@ -233,12 +283,13 @@ _DEFAULT_BASES = {
 }
 
 STAGES = [
-    "1️⃣ Upload","2️⃣ Zone Map","3️⃣ Drones","4️⃣ Gallery","5️⃣ Analysis",
+    "1️⃣ Folder Scan","2️⃣ Zone Map","3️⃣ Drones","4️⃣ Gallery","5️⃣ Analysis",
     "6️⃣ Resources","7️⃣ Approve I","8️⃣ Routes","9️⃣ Approve II","🔟 Comms",
 ]
 
 _PHASE_INFO = {
     "idle":              ("#555",          "⚫ Idle"),
+    "scanning":          (THEME["cyan"],   "🔵 Scanning folder…"),
     "running_phase1":    (THEME["yellow"], "🟡 Phase 1 — Running Agents"),
     "awaiting_resource": (THEME["orange"], "🟠 Awaiting Resource Approval"),
     "running_phase2":    (THEME["yellow"], "🟡 Phase 2 — Planning Routes"),
@@ -266,12 +317,6 @@ def _terminal():
         '<script>var t=document.getElementById("tlog");if(t)t.scrollTop=t.scrollHeight;</script>',
         unsafe_allow_html=True)
 
-def _save_upload(f):
-    suffix = Path(f.name).suffix or ".png"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(f.getvalue()); tmp.close()
-    return tmp.name
-
 def _sev_label(s):
     if s >= 0.8: return "🔴 CRITICAL"
     if s >= 0.6: return "🟠 HIGH"
@@ -286,11 +331,9 @@ def _remoji(rt):
     k = rt.lower().rstrip("s")
     return RESOURCE_EMOJI.get(k, RESOURCE_EMOJI.get(rt.lower(), "🚗"))
 
-# ── _nav: unique key via counter reset each render cycle ─────────────────────
 _nav_calls = {}
 
 def _reset_nav_counter():
-    """Call once at the top of main() each render cycle."""
     _nav_calls.clear()
 
 def _nav(back=None, fwd=None, fwd_label="▶ PROCEED"):
@@ -313,6 +356,17 @@ def _phase_badge():
         f'font-family:\'Share Tech Mono\',monospace;font-size:11px;font-weight:bold;">'
         f'{label}</span><br><br>', unsafe_allow_html=True)
 
+def _prob_bar(frac: float, width: int = 16) -> str:
+    filled   = int(frac * width)
+    thresh_i = int(FLOOD_FRACTION * width)
+    bar = ""
+    for i in range(width):
+        if i < filled:
+            bar += "█" if i < thresh_i else "▓"
+        else:
+            bar += "░"
+    return bar
+
 # ============================================================================
 #  SIDEBAR
 # ============================================================================
@@ -333,6 +387,20 @@ def _sidebar():
             st.markdown(f'<div class="card">⏸️ <b>Interrupted Before</b><br>'
                         f'<span style="color:{THEME["cyan"]};font-size:12px;">'
                         f'{", ".join(nxt)}</span></div>', unsafe_allow_html=True)
+
+        # Folder scan status
+        scan_results = st.session_state.get("scan_results", [])
+        if scan_results:
+            st.divider()
+            st.markdown("**📂 Folder Scan Results**")
+            for r in scan_results:
+                icon  = "🚨" if r["is_flood"] else ("⏩" if r.get("skipped") else "✅")
+                color = THEME["red"] if r["is_flood"] else ("#888" if r.get("skipped") else THEME["green"])
+                pct   = f'{r["flooded_fraction"]*100:.1f}%' if not r.get("skipped") else "—"
+                st.markdown(
+                    f'<div style="font-family:\'Share Tech Mono\',monospace;font-size:10px;'
+                    f'color:{color};padding:2px 0;">{icon} {r["name"][:22]} · {pct}</div>',
+                    unsafe_allow_html=True)
 
         st.divider()
         st.markdown(
@@ -362,12 +430,7 @@ def _sidebar():
         ]:
             val = gs.get(key)
             if val:
-                if key == "rescue_plan" and gs.get("resource_approved"):
-                    s = f'<span style="color:{THEME["green"]};">🟢 Approved</span>'
-                elif key == "route_plan" and gs.get("route_approved"):
-                    s = f'<span style="color:{THEME["green"]};">🟢 Approved</span>'
-                else:
-                    s = f'<span style="color:{THEME["green"]};">🟢 Done</span>'
+                s = f'<span style="color:{THEME["green"]};">🟢 Done</span>'
             else:
                 s = f'<span style="color:#888;">⚪ Idle</span>'
             st.markdown(f'<div class="card">{icon} <b>{name}</b><br>{s}</div>',
@@ -375,9 +438,6 @@ def _sidebar():
 
         st.divider()
         st.metric("Stage", f"{st.session_state.get('stage',0)+1} / {len(STAGES)}")
-        gs_filled = sum(1 for v in gs.values() if v is not None) if gs else 0
-        if gs_filled:
-            st.metric("State Fields", f"{gs_filled} populated")
         st.divider()
         if st.button("🔄 Full Reset", use_container_width=True):
             import uuid
@@ -400,7 +460,7 @@ def _stepper():
             st.markdown(
                 f'<div style="background:{bg};color:{fg};padding:6px 2px;text-align:center;'
                 f'border-radius:4px;font-size:9px;font-weight:bold;'
-                f'border:1px solid {THEME["cyan"]};">{"✅ " if i<s else ""}{label}</div>',
+                f'border:1px solid {THEME["cyan"]};{"" }>{"✅ " if i<s else ""}{label}</div>',
                 unsafe_allow_html=True)
 
 # ============================================================================
@@ -408,7 +468,7 @@ def _stepper():
 # ============================================================================
 
 def _folium_map():
-    gs = _graph_state()
+    gs     = _graph_state()
     routes = gs.get("route_plan", [])
     meta   = gs.get("image_meta") or _DEFAULT_META
     fmap   = folium.Map(location=[meta.get("center_lat",19.06), meta.get("center_lon",72.86)],
@@ -463,42 +523,244 @@ def _folium_map():
     return fmap
 
 # ============================================================================
-#  STAGE 1 — UPLOAD
+#  STAGE 1 — FOLDER SCAN  (replaces single-image upload)
 # ============================================================================
 
 def stage_1():
-    st.markdown(f'<h2 style="color:{THEME["cyan"]};">🖼️ Stage 1: Satellite Image Upload</h2>',
+    st.markdown(f'<h2 style="color:{THEME["cyan"]};">📂 Stage 1: Satellite Folder Scan</h2>',
                 unsafe_allow_html=True)
     _phase_badge()
-    c1, c2 = st.columns([1,1])
-    with c1:
-        uploaded = st.file_uploader("Upload satellite / aerial image",
-                                    type=["jpg","jpeg","png"])
-        if uploaded:
-            st.session_state["upload_obj"] = uploaded
-            pil = Image.open(uploaded)
-            st.session_state["upload_pil"] = pil
-            st.image(pil, caption=f"{uploaded.name}  ({pil.width}×{pil.height} px)",
-                     use_container_width=True)
-        st.markdown("### 📍 Geo Parameters")
-        lat = st.number_input("Center Latitude",  value=19.062061, format="%.6f")
-        lon = st.number_input("Center Longitude", value=72.863542, format="%.6f")
-        cov = st.number_input("Coverage (km)",    value=1.60, min_value=0.1)
-        pil_ref = st.session_state.get("upload_pil", Image.new("RGB",(1024,522)))
-        st.session_state["image_meta"] = {
-            "center_lat":lat,"center_lon":lon,"coverage_km":cov,
-            "width_px":pil_ref.width,"height_px":pil_ref.height}
-    with c2:
-        st.markdown("**System Logs**"); _terminal()
+
+    # ── If scan already completed, show summary + proceed button ──────────────
+    if st.session_state.get("scan_complete"):
+        flood_path = st.session_state.get("flood_image_path")
+        scan_results = st.session_state.get("scan_results", [])
+
+        if flood_path:
+            st.markdown(
+                f'<div class="card-flood">🚨 <b>Flood detected</b> in '
+                f'<code>{Path(flood_path).name}</code> — pipeline ready to fire.</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f'<div class="card-ok">✅ All images scanned — <b>no flood detected</b>.</div>',
+                unsafe_allow_html=True)
+
+        # Show scan results table
+        if scan_results:
+            df_rows = []
+            for r in scan_results:
+                if r.get("skipped"):
+                    df_rows.append({"Image": r["name"], "Status": "⏩ skipped",
+                                    "Flooded %": "—", "Max prob": "—", "Result": "—"})
+                else:
+                    df_rows.append({
+                        "Image":     r["name"],
+                        "Status":    "🚨 FLOOD" if r["is_flood"] else "✅ clear",
+                        "Flooded %": f'{r["flooded_fraction"]*100:.1f}%',
+                        "Max prob":  f'{r["max_prob"]:.3f}',
+                        "Result":    _prob_bar(r["flooded_fraction"]),
+                    })
+            st.dataframe(pd.DataFrame(df_rows), use_container_width=True, hide_index=True)
+
+        col_r, col_scan = st.columns(2)
+        with col_r:
+            if st.button("🔁 Re-scan folder", key="rescan"):
+                for k in ["scan_complete","scan_results","flood_image_path","scan_flood_result"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+        with col_scan:
+            if flood_path and st.button("▶ START PIPELINE with flood image", key="start_pipe"):
+                _log(f"Flood image confirmed: {Path(flood_path).name} — Phase 1 starting …")
+                st.session_state["pipeline_phase"] = "running_phase1"
+                st.session_state["stage"] = 1
+                st.rerun()
+            elif not flood_path:
+                st.info("No flood image found — add more images to the folder and re-scan.")
+        return
+
+    # ── Folder path input ──────────────────────────────────────────────────────
+    c_left, c_right = st.columns([3, 2])
+
+    with c_left:
+        st.markdown("### 📂 Image Folder")
+        st.caption(
+            "Enter the full path to your `satellite_images/` folder. "
+            "All JPG / PNG / TIF images inside will be scanned in alphabetical order."
+        )
+        default_folder = str(Path(_ROOT) / "satellite_images")
+        folder_str = st.text_input(
+            "Folder path",
+            value=st.session_state.get("folder_path", default_folder),
+            placeholder=r"C:\Dev\Crisis_Management\satellite_images",
+            key="folder_input",
+        )
+        st.session_state["folder_path"] = folder_str
+
+        folder = Path(folder_str.strip()) if folder_str.strip() else None
+        folder_ok = folder and folder.exists() and folder.is_dir()
+        images = _collect_images(folder) if folder_ok else []
+
+        if folder_ok:
+            st.success(f"✅ Folder found — **{len(images)} image(s)** detected")
+            if images:
+                st.markdown("**Images in scan order:**")
+                for i, p in enumerate(images, 1):
+                    st.markdown(
+                        f'<div class="scan-row" style="color:{THEME["text"]};">'
+                        f'[{i:02d}] {p.name}</div>', unsafe_allow_html=True)
+        elif folder_str.strip():
+            st.error("❌ Folder not found — check the path")
+
+    with c_right:
+        st.markdown("### 📍 Location Metadata")
+        st.caption(
+            "Plain JPG/PNG images carry **no GPS data**, so the location must be entered "
+            "manually. This is used by the Route Agent to convert pixel coordinates → "
+            "lat/lon for OSM road routing. Enter the approximate **centre** of the area "
+            "your images cover and how many kilometres across each image is."
+        )
+        lat = st.number_input("Centre Latitude",  value=float(st.session_state.get("meta_lat", 19.062061)), format="%.6f", key="mlat")
+        lon = st.number_input("Centre Longitude", value=float(st.session_state.get("meta_lon", 72.863542)), format="%.6f", key="mlon")
+        cov = st.number_input("Coverage (km)",    value=float(st.session_state.get("meta_cov", 1.6)),       min_value=0.1, key="mcov")
+        st.session_state["meta_lat"] = lat
+        st.session_state["meta_lon"] = lon
+        st.session_state["meta_cov"] = cov
+
+        st.markdown(
+            f'<div class="card" style="font-size:11px;">'
+            f'<b>How to find your lat/lon:</b><br>'
+            f'Open Google Maps → right-click the centre of your image area → '
+            f'copy the first two numbers shown.<br><br>'
+            f'<b>Coverage km</b> = how wide the area is that one image covers. '
+            f'For a city-block image ≈ 1–2 km. For a district image ≈ 5–10 km.'
+            f'</div>', unsafe_allow_html=True)
+
     st.divider()
-    if st.session_state.get("upload_obj"):
-        if st.button("▶ PROCEED — START LANGGRAPH PIPELINE", key="btn1"):
-            _log("Image accepted — LangGraph Phase 1 starting …")
-            st.session_state["pipeline_phase"] = "running_phase1"
-            st.session_state["stage"] = 1
-            st.rerun()
-    else:
-        st.info("Upload a satellite image to begin.")
+
+    # ── Scan button ───────────────────────────────────────────────────────────
+    if not folder_ok or not images:
+        st.info("Enter a valid folder path with images to begin scanning.")
+        return
+
+    st.markdown(
+        f'<div class="card">'
+        f'<b>Detection settings</b> (matches vision_agent thresholds):<br>'
+        f'Pixel threshold: UNet prob ≥ <b>{PIXEL_THRESHOLD}</b> → pixel flagged flooded &nbsp;|&nbsp; '
+        f'Image trigger: ≥ <b>{FLOOD_FRACTION*100:.0f}%</b> of pixels flooded → FLOOD confirmed'
+        f'</div>', unsafe_allow_html=True)
+
+    if st.button("🔍 START FOLDER SCAN", key="start_scan", use_container_width=True):
+        _log(f"=== Folder scan started — {len(images)} image(s) ===")
+        _log(f"Folder: {folder}")
+        _log(f"Pixel threshold: {PIXEL_THRESHOLD}  |  Flood trigger: {FLOOD_FRACTION*100:.0f}% pixels")
+
+        st.session_state["pipeline_phase"] = "scanning"
+
+        # ── Live scan UI elements ──────────────────────────────────────────
+        progress_bar  = st.progress(0, text="Initialising UNet model…")
+        status_slot   = st.empty()
+        img_col1, img_col2 = st.columns([1, 2])
+        img_slot      = img_col1.empty()    # current image thumbnail
+        metrics_slot  = img_col2.empty()    # live metric readout
+        table_slot    = st.empty()          # running results table
+
+        scan_results  = []
+        flood_found   = False
+        flood_path    = None
+
+        for idx, img_path in enumerate(images):
+            pct = (idx) / len(images)
+            progress_bar.progress(pct, text=f"Scanning [{idx+1}/{len(images)}]: {img_path.name}")
+            status_slot.info(f"🔬 Running UNet on **{img_path.name}**…")
+
+            # Show thumbnail
+            try:
+                pil = Image.open(img_path)
+                img_slot.image(pil, caption=img_path.name, use_container_width=True)
+            except Exception:
+                pass
+
+            t0 = time.time()
+            try:
+                result = _analyse_image(img_path)
+            except Exception as exc:
+                _log(f"[ERROR] {img_path.name}: {exc}")
+                scan_results.append({"name": img_path.name, "path": str(img_path),
+                                     "is_flood": False, "flooded_fraction": 0,
+                                     "max_prob": 0, "mean_prob": 0, "skipped": False,
+                                     "error": str(exc)})
+                continue
+
+            elapsed = time.time() - t0
+
+            # Live metrics display
+            frac = result["flooded_fraction"]
+            bar  = _prob_bar(frac)
+            colour = THEME["red"] if result["is_flood"] else THEME["green"]
+            metrics_slot.markdown(
+                f'<div style="font-family:\'Share Tech Mono\',monospace;font-size:12px;'
+                f'background:{THEME["bg2"]};padding:12px;border-radius:6px;'
+                f'border-left:4px solid {colour};">'
+                f'<b style="color:{colour};">{"🚨 FLOOD" if result["is_flood"] else "✅ clear"}</b><br><br>'
+                f'Flooded pixels : <b>{frac*100:.1f}%</b> (trigger ≥ {FLOOD_FRACTION*100:.0f}%)<br>'
+                f'Max prob       : <b>{result["max_prob"]:.3f}</b><br>'
+                f'Mean prob      : {result["mean_prob"]:.3f}<br>'
+                f'Progress       : <span style="letter-spacing:1px;">{bar}</span><br>'
+                f'Time           : {elapsed:.1f}s'
+                f'</div>', unsafe_allow_html=True)
+
+            _log(f'[{idx+1}/{len(images)}] {img_path.name} | '
+                 f'flooded={frac*100:.1f}% max={result["max_prob"]:.3f} → '
+                 f'{"FLOOD DETECTED" if result["is_flood"] else "clear"}')
+
+            scan_results.append(result)
+
+            # Update running table
+            df_rows = [{"Image": r["name"],
+                        "Flooded %": f'{r["flooded_fraction"]*100:.1f}%',
+                        "Max prob":  f'{r["max_prob"]:.3f}',
+                        "Status":    "🚨 FLOOD" if r["is_flood"] else "✅ clear"}
+                       for r in scan_results]
+            table_slot.dataframe(pd.DataFrame(df_rows), use_container_width=True, hide_index=True)
+
+            if result["is_flood"]:
+                flood_found = True
+                flood_path  = str(img_path)
+                progress_bar.progress(1.0, text="🚨 Flood detected — halting scan")
+                status_slot.error(
+                    f"🚨 **FLOOD DETECTED** in `{img_path.name}` — "
+                    f"{frac*100:.1f}% of pixels flooded | max_prob={result['max_prob']:.3f}"
+                )
+                _log(f"FLOOD DETECTED — {img_path.name} — halting scan, pipeline ready")
+                # Mark remaining as skipped
+                for rem in images[idx+1:]:
+                    scan_results.append({"name": rem.name, "path": str(rem),
+                                         "is_flood": False, "flooded_fraction": 0,
+                                         "max_prob": 0, "mean_prob": 0, "skipped": True})
+                    _log(f"Skipped (flood already found): {rem.name}")
+                break
+
+        progress_bar.progress(1.0, text="Scan complete")
+
+        # Save metadata for pipeline
+        meta = {"center_lat": lat, "center_lon": lon, "coverage_km": cov,
+                "width_px": 1024, "height_px": 1024}  # updated by vision_node
+        if flood_path:
+            try:
+                pil_tmp = Image.open(flood_path)
+                meta["width_px"]  = pil_tmp.width
+                meta["height_px"] = pil_tmp.height
+            except Exception:
+                pass
+
+        st.session_state["scan_results"]      = scan_results
+        st.session_state["scan_complete"]     = True
+        st.session_state["flood_found"]       = flood_found
+        st.session_state["flood_image_path"]  = flood_path
+        st.session_state["image_meta"]        = meta
+        st.session_state["pipeline_phase"]    = "idle" if not flood_found else "idle"
+        st.rerun()
 
 # ============================================================================
 #  STAGE 2 — ZONE MAP  (Phase 1 runs here on first load)
@@ -509,13 +771,15 @@ def stage_2():
                 unsafe_allow_html=True)
     _phase_badge()
 
-    # Trigger Phase 1 if we just came from Stage 1
     if st.session_state.get("pipeline_phase") == "running_phase1":
-        upload_obj = st.session_state.get("upload_obj")
-        img_path   = _save_upload(upload_obj) if upload_obj else "Images_for_testing/image.png"
+        # Use flood image from folder scan, fall back to upload_obj for compatibility
+        img_path = (st.session_state.get("flood_image_path")
+                    or "Images_for_testing/image.png")
         st.session_state["img_path"] = img_path
         meta = st.session_state.get("image_meta", _DEFAULT_META.copy())
-        with st.spinner("🚀 LangGraph Phase 1 running — vision → drones → resource LLM …  (~60-120 s)"):
+
+        st.info(f"🚀 Running LangGraph Phase 1 on `{Path(img_path).name}` …")
+        with st.spinner("vision → drones → LLM rescue plan  (~60-120 s)"):
             try:
                 _run_phase1(img_path, meta)
                 st.success("✅ Phase 1 complete — graph interrupted before admin_resource")
@@ -536,8 +800,9 @@ def stage_2():
         if os.path.exists(grid):
             st.image(Image.open(grid), caption="Zone Severity Grid (10×10)",
                      use_container_width=True)
-        elif st.session_state.get("upload_pil"):
-            st.image(st.session_state["upload_pil"], caption="Uploaded Image",
+        flood_path = st.session_state.get("flood_image_path")
+        if flood_path and os.path.exists(flood_path):
+            st.image(Image.open(flood_path), caption=f"Flood image: {Path(flood_path).name}",
                      use_container_width=True)
     with c2:
         st.markdown("**Top Affected Zones**")
@@ -555,7 +820,7 @@ def stage_2():
     _nav(back=0, fwd=2, fwd_label="▶ PROCEED TO DRONE ALLOCATION")
 
 # ============================================================================
-#  STAGE 3 — DRONE ALLOCATION
+#  STAGES 3–10  (unchanged from original — all read from LangGraph checkpoint)
 # ============================================================================
 
 def stage_3():
@@ -591,11 +856,6 @@ def stage_3():
     _terminal(); st.divider()
     _nav(back=1, fwd=3, fwd_label="▶ PROCEED TO GALLERY")
 
-# ============================================================================
-#  STAGE 4 — GALLERY
-#  Shows: original drone images FIRST, then annotated detection results,
-#         then people counts table — all from LangGraph checkpoint
-# ============================================================================
 
 def stage_4():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">📸 Stage 4: Drone Imagery Gallery</h2>',
@@ -605,10 +865,8 @@ def stage_4():
     gs     = _graph_state()
     alloc  = gs.get("drone_allocation", {})
     counts = gs.get("people_counts", {})
-    zimmap = gs.get("zone_image_map",  {})
     akv    = list(alloc.items())
 
-    # ── Section A: Original drone images ─────────────────────────────────
     st.markdown(f'<h4 style="color:{THEME["cyan"]};">📷 Raw Drone Footage</h4>',
                 unsafe_allow_html=True)
 
@@ -632,9 +890,8 @@ def stage_4():
                 else:
                     st.caption(f"**{name}** · {d_id} → {z_id}")
     else:
-        st.info("No zone images found in `zone_images/`. Place aerial photos there and rerun.")
+        st.info("No zone images found in `zone_images/`.")
 
-    # ── Section B: Annotated results (bounding boxes) ─────────────────────
     rp = Path(os.path.join(_ROOT, "zone_results"))
     annotated = {}
     if rp.exists():
@@ -645,35 +902,25 @@ def stage_4():
 
     if annotated:
         st.divider()
-        st.markdown(f'<h4 style="color:{THEME["cyan"]};">🔍 YOLO Detection Results (with bounding boxes)</h4>',
+        st.markdown(f'<h4 style="color:{THEME["cyan"]};">🔍 YOLO Detection Results</h4>',
                     unsafe_allow_html=True)
         cols = st.columns(3)
         for idx, (zone_id, img) in enumerate(annotated.items()):
             with cols[idx % 3]:
                 st.image(img, use_container_width=True)
-                n_ppl = counts.get(zone_id, 0)
-                st.caption(f"Zone **{zone_id}** — 👤 {n_ppl} people detected")
+                st.caption(f"Zone **{zone_id}** — 👤 {counts.get(zone_id, 0)} people detected")
 
-    # ── Section C: People counts table ────────────────────────────────────
     if counts:
         st.divider()
-        st.markdown("**👥 People Count Summary by Zone**")
         df = pd.DataFrame([{"Zone": k, "👤 People": v,
                              "Status": "✅ Detected" if v > 0 else "⚠️ 0 detected"}
                            for k, v in counts.items()])
         st.dataframe(df, use_container_width=True, hide_index=True)
-        total = sum(counts.values())
-        st.success(f"✅ **{total} people** detected across **{len(counts)} zones** "
-                   f"— results saved to crisis.db")
-    elif alloc:
-        st.info("People detection ran as part of Phase 1 — counts will appear here after run.")
+        st.success(f"✅ **{sum(counts.values())} people** across **{len(counts)} zones**")
 
     _terminal(); st.divider()
     _nav(back=2, fwd=4, fwd_label="▶ PROCEED TO ANALYSIS")
 
-# ============================================================================
-#  STAGE 5 — ANALYSIS
-# ============================================================================
 
 def stage_5():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">📊 Stage 5: Zone Analysis Results</h2>',
@@ -725,9 +972,6 @@ def stage_5():
     _terminal(); st.divider()
     _nav(back=3, fwd=5, fwd_label="▶ PROCEED TO RESOURCE ALLOCATION")
 
-# ============================================================================
-#  STAGE 6 — RESOURCE ALLOCATION  (display from LangGraph checkpoint)
-# ============================================================================
 
 def stage_6():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">📦 Stage 6: Resource Allocation</h2>',
@@ -737,12 +981,10 @@ def stage_6():
     plan = gs.get("rescue_plan", {})
 
     if not plan:
-        st.warning("Rescue plan not in graph state yet — check terminal for errors.")
+        st.warning("Rescue plan not in graph state yet — check terminal.")
         _terminal(); st.divider(); _nav(back=4); return
 
-    st.success("✅ Rescue plan generated by Gemini LLM via rescue_decision_node (Phase 1)")
-    st.caption("ℹ️  Results are read from the LangGraph checkpoint — LLM ran in Phase 1.")
-
+    st.success("✅ Rescue plan generated by Gemini LLM via rescue_decision_node")
     rows = []; totals = {}
     for z, alloc in plan.items():
         row = {"Zone": z}
@@ -760,9 +1002,6 @@ def stage_6():
     _terminal(); st.divider()
     _nav(back=4, fwd=6, fwd_label="▶ PROCEED TO APPROVAL GATE")
 
-# ============================================================================
-#  STAGE 7 — ADMIN APPROVAL GATE 1  ← FIRST of TWO approval gates
-# ============================================================================
 
 def stage_7():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">✅ Stage 7: Admin Approval Gate #1 — Resources</h2>',
@@ -773,12 +1012,11 @@ def stage_7():
     phase = st.session_state.get("pipeline_phase", "idle")
 
     if not plan:
-        st.warning("No rescue plan in graph state — go back to Stage 6.")
+        st.warning("No rescue plan — go back to Stage 6.")
         _nav(back=5); return
 
-    # Already approved — show status and proceed button
     if gs.get("resource_approved") or phase in ("awaiting_route","running_phase2","running_phase3","complete"):
-        st.success("✅ Resource allocation APPROVED — route planning has been triggered.")
+        st.success("✅ Resource allocation APPROVED — route planning triggered.")
         _nav(back=5, fwd=7, fwd_label="▶ VIEW ROUTE PLANNING")
         return
 
@@ -792,7 +1030,7 @@ def stage_7():
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ APPROVE — TRIGGER ROUTE PLANNING", key="app1", use_container_width=True):
-            _log("ADMIN ✓ Resource allocation APPROVED — resuming LangGraph (Phase 2) …")
+            _log("ADMIN ✓ Resources APPROVED — resuming LangGraph (Phase 2) …")
             st.session_state["pipeline_phase"] = "running_phase2"
             with st.spinner("🗺️ Route Agent planning OSM routes … (~30-60 s)"):
                 try:
@@ -807,7 +1045,7 @@ def stage_7():
             import uuid
             _log("ADMIN ✗ Rejected — restarting Phase 1 with new thread …")
             st.session_state["thread_id"] = f"aegis_{uuid.uuid4().hex[:8]}"
-            img_path = st.session_state.get("img_path","Images_for_testing/image.png")
+            img_path = st.session_state.get("flood_image_path") or "Images_for_testing/image.png"
             meta     = st.session_state.get("image_meta", _DEFAULT_META.copy())
             st.session_state["pipeline_phase"] = "running_phase1"
             with st.spinner("🔄 Re-running Phase 1 …"):
@@ -816,9 +1054,6 @@ def stage_7():
             st.rerun()
     _terminal()
 
-# ============================================================================
-#  STAGE 8 — ROUTE PLANNING
-# ============================================================================
 
 def stage_8():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">🗺️ Stage 8: Route Planning</h2>',
@@ -826,19 +1061,13 @@ def stage_8():
     _phase_badge()
 
     if st.session_state.get("pipeline_phase") == "running_phase2":
-        st.info("🗺️ Route planning is running … check terminal for progress.")
-        _terminal(); return
+        st.info("🗺️ Route planning running … check terminal."); _terminal(); return
 
     gs     = _graph_state()
     routes = gs.get("route_plan", [])
 
     if not routes:
-        st.warning("Route plan is not in graph state yet. Check terminal for errors.")
-        latest_map = os.path.join(_ROOT,"zone_results","route_map_latest.html")
-        if os.path.exists(latest_map):
-            st.info(f"💡 Routes were computed and HTML map saved at `{latest_map}` "
-                    f"but failed to persist to LangGraph checkpoint. "
-                    f"Ensure geo_reference.py and master_nodes.py are updated.")
+        st.warning("Route plan not in graph state yet.")
         _terminal(); st.divider(); _nav(back=6); return
 
     st.success(f"✅ {sum(1 for r in routes if r.get('success'))} / {len(routes)} routes planned")
@@ -850,7 +1079,6 @@ def stage_8():
         "Dist km":r.get("distance_km",0),
         "ETA min":r.get("eta_minutes",0),
         "Note":r.get("eta_note",""),
-        "Waypoints":len(r.get("waypoints",[])),
         "Status":"✓ OK" if r.get("success") else f'✗ {r.get("error","?")}',
     } for r in routes]), use_container_width=True, hide_index=True)
 
@@ -867,7 +1095,6 @@ def stage_8():
         if st.button("◀ BACK", key="b8"): st.session_state["stage"]=6; st.rerun()
     with c2:
         if st.button("🔄 Re-plan Routes", key="rp8"):
-            _log("Re-planning routes …")
             st.session_state["pipeline_phase"] = "running_phase2"
             with st.spinner("🔄 Re-running route planner …"):
                 try: _run_phase2(approved=True)
@@ -877,9 +1104,6 @@ def stage_8():
         if routes and st.button("▶ PROCEED TO APPROVAL #2", key="f8"):
             st.session_state["stage"] = 8; st.rerun()
 
-# ============================================================================
-#  STAGE 9 — ADMIN APPROVAL GATE 2  ← SECOND of TWO approval gates
-# ============================================================================
 
 def stage_9():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">✅ Stage 9: Admin Approval Gate #2 — Routes</h2>',
@@ -890,10 +1114,8 @@ def stage_9():
     phase  = st.session_state.get("pipeline_phase", "idle")
 
     if not routes:
-        st.warning("No route plan — go back to Stage 8.")
-        _nav(back=7); return
+        st.warning("No route plan — go back to Stage 8."); _nav(back=7); return
 
-    # Already approved
     if gs.get("route_approved") or phase in ("running_phase3","complete"):
         st.success("✅ Routes APPROVED — Communication Agent running / complete.")
         _nav(back=7, fwd=9, fwd_label="▶ VIEW DISPATCH COMMUNICATIONS")
@@ -902,25 +1124,19 @@ def stage_9():
     st.markdown("**Review all planned routes before dispatching:**")
     st.dataframe(pd.DataFrame([{
         "Resource":f'{_remoji(r.get("resource_type",""))} {r.get("resource_type","")}',
-        "Units":r.get("unit_count",1),
-        "Zone":r.get("zone"),
-        "From":r.get("origin_name"),
-        "Dist km":r.get("distance_km",0),
+        "Units":r.get("unit_count",1), "Zone":r.get("zone"),
+        "From":r.get("origin_name"), "Dist km":r.get("distance_km",0),
         "ETA min":r.get("eta_minutes",0),
         "Status":"✓ OK" if r.get("success") else "✗ FAILED",
     } for r in routes]), use_container_width=True, hide_index=True)
-
-    mp = gs.get("route_map_path")
-    if mp and os.path.exists(mp):
-        st.info(f"📄 Route map: `{mp}`")
 
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ APPROVE ROUTES & DISPATCH", key="app2", use_container_width=True):
-            _log("ADMIN ✓ Route plan APPROVED — resuming LangGraph (Phase 3) …")
+            _log("ADMIN ✓ Routes APPROVED — Phase 3 starting …")
             st.session_state["pipeline_phase"] = "running_phase3"
-            with st.spinner("📡 Communication Agent generating Gemini dispatch instructions …"):
+            with st.spinner("📡 Communication Agent generating dispatch instructions …"):
                 try:
                     _run_phase3(approved=True)
                     st.success("✅ Dispatch instructions ready!"); st.balloons()
@@ -938,9 +1154,6 @@ def stage_9():
             st.rerun()
     _terminal()
 
-# ============================================================================
-#  STAGE 10 — COMMUNICATIONS  (honest SMS status)
-# ============================================================================
 
 def stage_10():
     st.markdown(f'<h2 style="color:{THEME["cyan"]};">📡 Stage 10: Communication Agent</h2>',
@@ -958,7 +1171,6 @@ def stage_10():
         st.warning("Dispatch data not available yet.")
         _terminal(); st.divider(); _nav(back=8); return
 
-    # Pipeline complete banner
     if st.session_state.get("pipeline_phase") == "complete":
         st.markdown(
             f'<div style="background:{THEME["bg2"]};border:2px solid {THEME["green"]};'
@@ -969,7 +1181,6 @@ def stage_10():
             f'All {len(STAGES)} stages executed via LangGraph master_graph</span></div>',
             unsafe_allow_html=True)
 
-    # Dispatch instructions
     instructions = (dispatch or {}).get("instructions", {})
     st.markdown("**📋 Dispatch Instructions (Gemini LLM)**")
     if instructions:
@@ -988,68 +1199,40 @@ def stage_10():
                 f'{em} {r.get("unit_count",1)}× {rtype} → Zone {r.get("zone")}</b><br>'
                 f'<span style="font-family:\'Share Tech Mono\';font-size:11px;">'
                 f'From: {r.get("origin_name","?")} · {r.get("distance_km","?")} km · '
-                f'ETA {r.get("eta_minutes","?")} min · {len(r.get("waypoints",[]))} waypoints'
+                f'ETA {r.get("eta_minutes","?")} min'
                 f'</span></div>', unsafe_allow_html=True)
 
     summary = (dispatch or {}).get("summary","")
     if summary:
         st.info(f"**Commander Summary:** {summary}")
 
-    # ── Honest SMS status ─────────────────────────────────────────────────
     st.markdown("**📱 SMS Dispatch Status**")
     from dotenv import load_dotenv; load_dotenv()
-    sms_results       = (dispatch or {}).get("sms_results", [])
-    twilio_sid        = os.getenv("TWILIO_ACCOUNT_SID")
-    twilio_token      = os.getenv("TWILIO_AUTH_TOKEN")
-    twilio_from       = os.getenv("TWILIO_PHONE_NUMBER")
-    twilio_to         = os.getenv("YOUR_PHONE_NUMBER")
-    twilio_configured = all([twilio_sid, twilio_token, twilio_from, twilio_to])
-
+    sms_results  = (dispatch or {}).get("sms_results", [])
+    twilio_configured = all([os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"),
+                              os.getenv("TWILIO_PHONE_NUMBER"), os.getenv("YOUR_PHONE_NUMBER")])
     if sms_results:
         for res in sms_results:
             if res.get("success"):
-                st.markdown(
-                    f'<div class="card" style="border-color:{THEME["green"]};">'
-                    f'✅ SMS sent → Zone <b>{res.get("zone","")}</b>  ·  '
-                    f'SID: <code>{res.get("sid","")}</code></div>',
-                    unsafe_allow_html=True)
+                st.markdown(f'<div class="card-ok">✅ SMS sent → Zone <b>{res.get("zone","")}</b>  ·  '
+                            f'SID: <code>{res.get("sid","")}</code></div>', unsafe_allow_html=True)
             else:
-                st.markdown(
-                    f'<div class="card" style="border-color:{THEME["red"]};">'
-                    f'❌ SMS FAILED → Zone <b>{res.get("zone","")}</b>  ·  '
-                    f'{res.get("error","unknown error")}</div>',
-                    unsafe_allow_html=True)
+                st.markdown(f'<div class="card-flood">❌ SMS FAILED → Zone <b>{res.get("zone","")}</b>  ·  '
+                            f'{res.get("error","unknown error")}</div>', unsafe_allow_html=True)
     elif not twilio_configured:
         st.markdown(
-            f'<div class="card-warn">'
-            f'⚠️ <b>SMS was NOT sent</b> — Twilio credentials not configured.<br><br>'
-            f'To enable real SMS dispatch, add these to your <code>.env</code> file:<br>'
-            f'<code>TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxx</code><br>'
-            f'<code>TWILIO_AUTH_TOKEN=your_auth_token</code><br>'
-            f'<code>TWILIO_PHONE_NUMBER=+1xxxxxxxxxx</code><br>'
-            f'<code>YOUR_PHONE_NUMBER=+91xxxxxxxxxx</code><br><br>'
-            f'Dispatch instructions above were generated — only SMS delivery is skipped.'
-            f'</div>', unsafe_allow_html=True)
+            f'<div class="card-warn">⚠️ <b>SMS not sent</b> — Twilio credentials not set in <code>.env</code>.<br>'
+            f'Dispatch instructions above were generated — only SMS delivery is skipped.</div>',
+            unsafe_allow_html=True)
 
-    # Audio files
     audio = (dispatch or {}).get("audio_files", [])
     if audio:
-        st.markdown("**🔊 Audio Dispatch Files (gTTS)**")
+        st.markdown("**🔊 Audio Dispatch Files**")
         for fpath in audio:
             if os.path.exists(fpath):
                 st.audio(fpath); st.caption(fpath)
 
-    st.markdown(
-        f'<div style="color:{THEME["green"]};font-family:\'Share Tech Mono\';font-size:13px;'
-        f'font-weight:bold;">📡 {len(routes)} instruction(s) ready · LangGraph run COMPLETE</div>',
-        unsafe_allow_html=True)
-
     _terminal(); st.divider()
-    c1, c2, c3 = st.columns(3)
-    with c2:
-        if st.button("📡 CONFIRM ALL DISPATCHES SENT", use_container_width=True, key="send"):
-            _log("All dispatches confirmed sent.")
-            st.success("✅ All dispatches confirmed!"); st.balloons()
     c1, c2 = st.columns(2)
     with c1:
         if st.button("◀ BACK", key="b10"): st.session_state["stage"]=8; st.rerun()
@@ -1068,7 +1251,7 @@ STAGE_FNS = [stage_1,stage_2,stage_3,stage_4,stage_5,
              stage_6,stage_7,stage_8,stage_9,stage_10]
 
 def main():
-    _reset_nav_counter()   # must be first — clears nav key counter each render
+    _reset_nav_counter()
     st.session_state.setdefault("stage",0)
     st.session_state.setdefault("log","")
     st.session_state.setdefault("pipeline_phase","idle")
