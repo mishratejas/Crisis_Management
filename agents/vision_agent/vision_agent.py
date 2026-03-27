@@ -18,6 +18,7 @@ from .flood_segmentation import detect_flood
 from .earthquake         import detect_damage
 from .grid_mapper        import build_zone_map
 from .severity           import add_severity
+from .building_segmentation import detect_buildings
 
 
 def analyze_image(image_path: str) -> dict:
@@ -42,6 +43,8 @@ def analyze_image(image_path: str) -> dict:
     # 2. Flood segmentation → float probability map (H×W, values 0.0–1.0)
     flood_prob_map = detect_flood(image)
 
+    building_prob_map = detect_buildings(image)
+
     # 3. Detect damaged buildings/debris → list of bbox dicts
     damage_detections = detect_damage(image)
 
@@ -50,6 +53,7 @@ def analyze_image(image_path: str) -> dict:
         image             = image,
         flood_prob_map    = flood_prob_map,
         damage_detections = damage_detections,
+        building_prob_map=building_prob_map
     )
 
     # 5. Add composite severity score to each zone
@@ -66,4 +70,5 @@ def analyze_image(image_path: str) -> dict:
     return {
         "zone_map":       zone_map,
         "flood_prob_map": flood_prob_map,
+
     }

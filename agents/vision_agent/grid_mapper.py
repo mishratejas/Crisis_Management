@@ -4,6 +4,7 @@ import numpy as np
 def build_zone_map(image,
                    flood_prob_map,
                    damage_detections,
+                   building_prob_map,
                    grid_size=10):
 
     """
@@ -48,6 +49,25 @@ def build_zone_map(image,
             zone_id = f"Z{gy}{gx}"
 
             zone_map[zone_id]["flood_score"] = round(flood_score, 3)
+
+    # -----------------------------
+    # Building score per zone
+    # -----------------------------
+    for gy in range(grid_size):
+        for gx in range(grid_size):
+
+            x_start = gx * cell_w
+            x_end = (gx + 1) * cell_w
+
+            y_start = gy * cell_h
+            y_end = (gy + 1) * cell_h
+
+            building_cell = building_prob_map[y_start:y_end, x_start:x_end]
+
+            building_score = float(np.mean(building_cell))
+
+            zone_id = f"Z{gy}{gx}"
+            zone_map[zone_id]["building_score"] = round(building_score, 3)
 
     # -----------------------------
     # Damage score from detections
